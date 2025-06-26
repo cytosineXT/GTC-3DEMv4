@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 matplotlib.use('agg')
 from pathlib import Path
 from net.utils import increment_path, EDataset, MultiEMRCSDataset, get_logger, get_model_memory, psnr, ssim, find_matching_files, process_files, WrappedModel, savefigdata
-from NNval_GTC import  plot2DRCS, valmain, plotstatistic2
+from NNval_GTC import valmain, plotstatistic2, plot4D_E_RealImage
 from pytictoc import TicToc
 t = TicToc()
 t.tic()
@@ -44,8 +44,8 @@ def parse_args():
     # parser.add_argument('--valdir', type=str, default='/mnt/Disk/jiangxiaotian/datasets/Datasets_3DEM/allplanes/mie/b943_mie_val', help='Path to validation directory') #3090red
     # parser.add_argument('--rcsdir', type=str, default='/mnt/truenas_jiangxiaotian/allplanes/mie/b943_mie_val', help='Path to rcs directory')
     # parser.add_argument('--valdir', type=str, default='/mnt/truenas_jiangxiaotian/allplanes/mie/b943_mie_val', help='Path to validation directory') #3090liang
-    parser.add_argument('--rcsdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/testtrain_E4', help='Path to rcs directory')
-    parser.add_argument('--valdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/testtrain_E4', help='Path to validation directory') #3090liang
+    parser.add_argument('--rcsdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_RealImage/testtrain', help='Path to rcs directory')
+    parser.add_argument('--valdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_RealImage/testtrain', help='Path to validation directory') #3090liang
     parser.add_argument('--pretrainweight', type=str, default=None, help='Path to pretrained weights')
 
     parser.add_argument('--seed', type=int, default=7, help='Random seed for reproducibility')
@@ -162,9 +162,12 @@ save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{nam
 lastsavedir = os.path.join(save_dir,'last.pt')
 bestsavedir = os.path.join(save_dir,'best.pt')
 
+global logger
 logger = get_logger(os.path.join(save_dir,'log.txt'))
 logger.info(args)
 logger.info(f'seed:{seed}')
+
+
 
 
 if args.fold:
@@ -345,13 +348,13 @@ for i in range(epoch):
     if GTflag == 1:
         outGTpngpath = os.path.join(save_dir,f'{drawplane}theta{drawem[0]}phi{drawem[1]}freq{drawem[2]}_GT.png')
         out2DGTpngpath = os.path.join(save_dir,f'{drawplane}theta{drawem[0]}phi{drawem[1]}freq{drawem[2]}_2DGT.png')
-        # plot2DRCS(rcs=drawGT.squeeze(), savedir=out2DGTpngpath, logger=logger,cutmax=None) #作图模块全线崩溃
+        plot4D_E_RealImage(drawGT.squeeze(), out2DGTpngpath, logger) #作图模块全线崩溃
         GTflag = 0
         logger.info('drawed GT map')
     if i == 0 or (i+1) % 20 == 0: 
         outrcspngpath = os.path.join(save_dir,f'{drawplane}theta{drawem[0]}phi{drawem[1]}freq{drawem[2]}_epoch{i}.png')
         out2Drcspngpath = os.path.join(save_dir,f'{drawplane}theta{drawem[0]}phi{drawem[1]}freq{drawem[2]}_epoch{i}_psnr{p.item():.2f}_ssim{s.item():.4f}_mse{m:.4f}_2D.png')
-        # plot2DRCS(rcs=drawrcs.squeeze(), savedir=out2Drcspngpath, logger=logger,cutmax=None)
+        plot4D_E_RealImage(drawrcs.squeeze(), out2Drcspngpath, logger)
         logger.info(f'drawed {i+1} epoch map')
 
     # 将batch指标list 计算为epoch指标
@@ -404,6 +407,8 @@ for i in range(epoch):
     logger.info(f'↑----epoch:{i+1}(lr:{scheduler.get_last_lr()[0]:.4f}),loss:{epoch_mean_loss:.4f},psnr:{epoch_psnr:.2f},ssim:{epoch_ssim:.4f},mse:{epoch_mse:.4f}----↑')
 
     def draw2dcurve(curve, savedir, ylabel, title):
+        if not os.path.exists(os.path.dirname(savedir)):
+            os.makedirs(os.path.dirname(savedir))
         plt.clf()
         plt.figure(figsize=(7, 4.5))
         plt.plot(range(0, i+1), curve)
@@ -413,19 +418,19 @@ for i in range(epoch):
         plt.savefig(savedir)
         savefigdata(curve,img_path=savedir)
         plt.close()
-    draw2dcurve(losses, os.path.join(save_dir,'loss.png'), 'Loss', 'Training Loss Curve')
-    draw2dcurve(psnrs, os.path.join(save_dir,'psnr.png'), 'PSNR', 'Training PSNR Curve')
-    draw2dcurve(ssims, os.path.join(save_dir,'ssim.png'), 'SSIM', 'Training SSIM Curve')
-    draw2dcurve(mses, os.path.join(save_dir,'mse.png'), 'MSE', 'Training MSE Curve')
-    draw2dcurve(nmses, os.path.join(save_dir,'nmse.png'), 'NMSE', 'Training NMSE Curve')
-    draw2dcurve(rmses, os.path.join(save_dir,'rmse.png'), 'RMSE', 'Training RMSE Curve')
-    draw2dcurve(l1s, os.path.join(save_dir,'l1.png'), 'L1', 'Training L1 Curve')
-    draw2dcurve(percentage_errors, os.path.join(save_dir,'percentage_error.png'), 'Percentage Error', 'Training Percentage Error Curve')
-    draw2dcurve(mainLs, os.path.join(save_dir,'mainloss.png'), 'Main Loss', 'Training Main Loss Curve')
-    draw2dcurve(maxLs, os.path.join(save_dir,'maxloss.png'), 'Max Loss', 'Training Max Loss Curve')
-    draw2dcurve(helmholtzLs, os.path.join(save_dir,'helmholtzloss.png'), 'Helmholtz Loss', 'Training Helmholtz Loss Curve')
-    draw2dcurve(bandlimitLs, os.path.join(save_dir,'bandlimitloss.png'), 'Bandlimit Loss', 'Training Bandlimit Loss Curve')
-    draw2dcurve(reciprocityLs, os.path.join(save_dir,'reciprocityloss.png'), 'Reciprocity Loss', 'Training Reciprocity Loss Curve')
+    draw2dcurve(losses, os.path.join(save_dir,'fig/loss.png'), 'Loss', 'Training Loss Curve')
+    draw2dcurve(psnrs, os.path.join(save_dir,'fig/psnr.png'), 'PSNR', 'Training PSNR Curve')
+    draw2dcurve(ssims, os.path.join(save_dir,'fig/ssim.png'), 'SSIM', 'Training SSIM Curve')
+    draw2dcurve(mses, os.path.join(save_dir,'fig/mse.png'), 'MSE', 'Training MSE Curve')
+    draw2dcurve(nmses, os.path.join(save_dir,'fig/nmse.png'), 'NMSE', 'Training NMSE Curve')
+    draw2dcurve(rmses, os.path.join(save_dir,'fig/rmse.png'), 'RMSE', 'Training RMSE Curve')
+    draw2dcurve(l1s, os.path.join(save_dir,'fig/l1.png'), 'L1', 'Training L1 Curve')
+    draw2dcurve(percentage_errors, os.path.join(save_dir,'fig/percentage_error.png'), 'Percentage Error', 'Training Percentage Error Curve')
+    draw2dcurve(mainLs, os.path.join(save_dir,'fig/mainloss.png'), 'Main Loss', 'Training Main Loss Curve')
+    draw2dcurve(maxLs, os.path.join(save_dir,'fig/maxloss.png'), 'Max Loss', 'Training Max Loss Curve')
+    draw2dcurve(helmholtzLs, os.path.join(save_dir,'fig/helmholtzloss.png'), 'Helmholtz Loss', 'Training Helmholtz Loss Curve')
+    draw2dcurve(bandlimitLs, os.path.join(save_dir,'fig/bandlimitloss.png'), 'Bandlimit Loss', 'Training Bandlimit Loss Curve')
+    draw2dcurve(reciprocityLs, os.path.join(save_dir,'fig/reciprocityloss.png'), 'Reciprocity Loss', 'Training Reciprocity Loss Curve')
 
 
     plt.clf() 
@@ -606,6 +611,8 @@ for i in range(epoch):
 
 
         def draw2dcurve2(curve, savedir, ylabel, title):
+            if not os.path.exists(os.path.dirname(savedir)):
+                os.makedirs(os.path.dirname(savedir))
             plt.clf()
             plt.figure(figsize=(7, 4.5))
             plt.plot(range(0, i+1), curve, label='ave', linestyle='--')
@@ -615,9 +622,9 @@ for i in range(epoch):
             plt.savefig(savedir)
             savefigdata(curve,img_path=savedir)
             plt.close()
-        draw2dcurve2(allavemses, os.path.join(save_dir,'valmse.png'), 'MSE', 'Val MSE Curve')
-        draw2dcurve2(allavepsnrs, os.path.join(save_dir,'valpsnr.png'), 'PSNR', 'Val PSNR Curve')
-        draw2dcurve2(allavessims, os.path.join(save_dir,'valssim.png'), 'SSIM', 'Val SSIM Curve')
+        draw2dcurve2(allavemses, os.path.join(save_dir,'fig/valmse.png'), 'MSE', 'Val MSE Curve')
+        draw2dcurve2(allavepsnrs, os.path.join(save_dir,'fig/valpsnr.png'), 'PSNR', 'Val PSNR Curve')
+        draw2dcurve2(allavessims, os.path.join(save_dir,'fig/valssim.png'), 'SSIM', 'Val SSIM Curve')
 
         def draw2dcurve3(curve1, curve2, savedir, ylabel, title):
             plt.clf()

@@ -308,19 +308,18 @@ class EDataset(Dataset.Dataset):
     def __getitem__(self, index):  
         import re
         file = self.filelist[index]
-        # plane, theta, phi, freq= re.search(r"([a-zA-Z0-9]{4})_theta(\d+)phi(\d+)f(\d.+).pt", file).groups()
-        try:
-            plane, theta, phi, freq= re.search(r"(?:synth_)?([a-zA-Z0-9]{4})_theta(\d+)(?:_)?phi(\d+)(?:_)?f(\d+\.\d+).pt", file).groups() #有无synth_前缀；有无theta phi f间横杠；整数theta phi
-        except:
-            plane, theta, phi, freq= re.search(r"(?:synth_)?([a-zA-Z0-9]{4})_theta(\d+\.\d+)(?:_)?phi(\d+\.\d+)(?:_)?f(\d+\.\d+).pt", file).groups() #有无synth_前缀；有无theta phi f间横杠；浮点数theta phi
-
+        plane, theta, phi, freq= re.search(r"([a-zA-Z0-9]{4})_theta(\d+)phi(\d+)f(\d.+)_RI.pt", file).groups() #匹配实部虚部的4维E数据
+        # try:
+        #     plane, theta, phi, freq= re.search(r"(?:synth_)?([a-zA-Z0-9]{4})_theta(\d+)(?:_)?phi(\d+)(?:_)?f(\d+\.\d+)_RI.pt", file).groups() #有无synth_前缀；有无theta phi f间横杠；整数theta phi
+        # except:
+        #     plane, theta, phi, freq= re.search(r"(?:synth_)?([a-zA-Z0-9]{4})_theta(\d+\.\d+)(?:_)?phi(\d+\.\d+)(?:_)?f(\d+\.\d+)_RI.pt", file).groups() #有无synth_前缀；有无theta phi f间横杠；浮点数theta phi
         theta = float(theta)
         phi = float(phi)
         freq = float(freq)
         in_em = [plane,theta,phi,freq]
-        rcs = torch.load(os.path.join(self.rcsdir,file), weights_only=False)#这里还是np.array
-        rcs = torch.tensor(rcs).permute(2, 0, 1)[:,:-1,:]  # (h, w, c) -> (c, h, w)
-
+        # rcs = torch.load(os.path.join(self.rcsdir,file), weights_only=False)#这里还是np.array
+        # rcs = torch.tensor(rcs).permute(2, 0, 1)[:,:-1,:]  # (h, w, c) -> (c, h, w)
+        rcs = torch.load(os.path.join(self.rcsdir,file), weights_only=False).permute(2, 0, 1)[:,:-1,:]  # (h, w, c) -> (c, h, w) 输出torch.Size([4, 360, 720])
         return in_em, rcs
 
 class EMRCSDataset(Dataset.Dataset):
