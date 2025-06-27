@@ -47,12 +47,13 @@ def parse_args():
     parser.add_argument('--valdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_RealImage/testtrain', help='Path to validation directory') #3090liang
     parser.add_argument('--pretrainweight', type=str, default=None, help='Path to pretrained weights')
 
-    parser.add_argument('--seed', type=int, default=7, help='Random seed for reproducibility')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     parser.add_argument('--attn', type=int, default=0, help='Transformer layers')
     parser.add_argument('--lr', type=float, default=0.0001, help='Loss threshold or gamma parameter')
     parser.add_argument('--cuda', type=str, default='cuda:0', help='CUDA device to use(cpu cuda:0 cuda:1...)')
     parser.add_argument('--fold', type=str, default=None, help='Fold to use for validation (None fold1 fold2 fold3 fold4)')
 
+    parser.add_argument('--lam_main', type=float, default=10, help='control main loss, i love 0.001')
     parser.add_argument('--lam_max', type=float, default=0.001, help='control max loss, i love 0.001')
     parser.add_argument('--lam_hel', type=float, default=0, help='control helmholtz loss, i love 0.001')
     parser.add_argument('--lam_fft', type=float, default=0, help='control fft loss, i love 0.001')
@@ -88,6 +89,7 @@ batchsize = args.batch
 valbatch = args.valbatch
 loss_type = args.loss
 
+lambda_main = args.lam_main
 lambda_max = args.lam_max
 lambda_helmholtz = args.lam_hel
 lambda_bandlimit = args.lam_fft
@@ -138,8 +140,8 @@ in_ems = []
 rcss = []
 cnt = 0
 losses, psnrs, ssims, mses = [], [], [], []
-nmses, rmses, l1s, percentage_errors = [], [], [], []
-mainLs, maxLs, helmholtzLs, bandlimitLs, reciprocityLs = [], [], [], [], []
+nmses, rmses, l1s, percentage_errors, helmholtzs, bandilimits, reciprocitys, kks, freq_smooths = [], [], [], [], [], [], [], [], []
+mainLosses, maxLosses, helmholtzLosses, bandlimitLosses, reciprocityLosses = [], [], [], [], []
 lastpsnr, lastmse, lastssim, lasttime = 0.0, 0.0, 0.0, 0.0
 corrupted_files = []
 lgrcs = False
@@ -155,7 +157,7 @@ oneplane = args.rcsdir.split('/')[-1][0:4]
 
 from datetime import datetime
 date = datetime.today().strftime("%m%d")
-save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}{loss_type}_{args.fold if args.fold else oneplane}_b{batchsize}e{epoch}lr{learning_rate}sd{seed}Tr{attnlayer}_lm{lambda_max}_{cudadevice}_'), exist_ok=False))
+save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}_{args.fold if args.fold else oneplane}_sd{seed}_l1{lambda_main}lm{lambda_max}_{cudadevice}_'), exist_ok=False))
 # save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}{loss_type}_{args.fold if args.fold else oneplane}_b{batchsize}e{epoch}ep{args.pinnepoch}Tr{attnlayer}_lh{lambda_helmholtz}lf{lambda_bandlimit}lc{lambda_reciprocity}_{cudadevice}_'), exist_ok=False))
 
 lastsavedir = os.path.join(save_dir,'last.pt')
@@ -232,22 +234,19 @@ autoencoder = autoencoder.to(device)
 optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate, weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=lr_time)
 
-allavemses = []
-allavepsnrs = []
-allavessims = []
+allavemses, allavepsnrs, allavessims = [], [], []
 flag = 1
 GTflag = 1
 flopflag = 1
 for i in range(epoch):
     epoch_flag = 1
-    valallpsnrs = []
-    valallssims = []
-    valallmses = []
+    epoch_loss = []
+    valallpsnrs, valallssims, valallmses = [], [], []
     psnr_list, ssim_list, mse_list, nmse_list, rmse_list, l1_list, percentage_error_list = [], [], [], [], [], [], []
     mainLlist, maxLlist, helmholtzLlist, bandlimitLlist, reciprocityLlist = [], [], [], [], [] 
+    metrics_helmholtzlist, metrics_bandlimitlist, metrics_reciprocitylist, metrics_kramers_kroniglist, metrics_frequency_smoothnesslist = [], [], [], [], []
     jj=0
     logger.info('\n')
-    epoch_loss = []
     timeepoch = time.time()
     for in_em1,rcs1 in tqdm(dataloader,desc=f'epoch:{i},lr={scheduler.get_last_lr()[0]:.5f}',ncols=100,postfix=f'loss:{(epoch_mean_loss):.4f}'):
         jj=jj+1
@@ -256,8 +255,10 @@ for i in range(epoch):
         # objlist , ptlist = find_matching_files(in_em1[0], "./testplane")
         objlist , ptlist = find_matching_files(in_em1[0], "./planes")
         planesur_faces, planesur_verts, planesur_faceedges, geoinfo = process_files(objlist, device)
-
-        loss, outrcs, psnr_mean, _, ssim_mean, _, mse, nmse, rmse, l1, percentage_error, _ , metrics= autoencoder(
+        # return total_loss, decoded, mean_psnr, psnr_list, mean_ssim, ssim_list, mse, nmse, rmse, l1, percentage_error, mse_list, metrics
+        # return decoded, losses, metrics
+        decoded, metrics= autoencoder(
+        # loss, outrcs, psnr_mean, _, ssim_mean, _, mse, nmse, rmse, l1, percentage_error, _ , metrics= autoencoder(
             vertices = planesur_verts,
             faces = planesur_faces, #torch.Size([batchsize, 33564, 3])
             face_edges = planesur_faceedges,
@@ -269,11 +270,46 @@ for i in range(epoch):
             epochnow = i,
             pinnepoch= args.pinnepoch,
             epoch_flag = epoch_flag,
+            lambda_main=lambda_main,
             lambda_max=lambda_max,
             lambda_helmholtz=lambda_helmholtz,
             lambda_bandlimit=lambda_bandlimit,
             lambda_reciprocity=lambda_reciprocity,
         )
+        # metrics = {
+            #     'psnr': mean_psnr,
+            #     'ssim': mean_ssim,
+            #     'mse': mse,
+            #     'nmse': nmse,
+            #     'rmse': rmse,
+            #     'l1': l1,
+            #     'psnr_list': psnr_list,
+            #     'ssim_list': ssim_list,
+            #     'mse_list': mse_list,
+            #     'percentage_error': percentage_error,
+            #     'pinn_helmholtz': helm_metric,
+            #     'pinn_bandlimit': band_metric,
+            #     'pinn_reciprocity': reciprocity_metric,  # 如果有互易性损失
+            #     'pinn_kramers_kronig': kk_metric,  # 如果有
+            #     'pinn_frequency_smoothness': freq_smooth_metric,  # 如果有频率平滑性损失
+
+            #     'total_loss': total_loss,
+            #     'main_loss': mainloss,
+            #     'max_loss': maxloss,
+            #     'helmholtz_loss': helmholtz_loss,
+            #     'bandlimit_loss': bandlimit_loss,
+            #     'reciprocity_loss': reciprocity_loss,
+            # }
+        loss = metrics['total_loss']
+        psnr_mean = metrics['psnr']
+        ssim_mean = metrics['ssim']
+        mse = metrics['mse']
+        nmse = metrics['nmse']
+        rmse = metrics['rmse']
+        l1 = metrics['l1']
+        percentage_error = metrics['percentage_error']
+        kk_metric = metrics['pinn_kramers_kronig']
+        freq_smooth_metric = metrics['pinn_frequency_smoothness']
 
         if epoch_flag == 1:
             logger.info(f'\n{metrics}')
@@ -286,17 +322,8 @@ for i in range(epoch):
             flopflag = 0
             del temp_model 
 
-        if lgrcs == True:
-            outrcslg = outrcs
-            outrcs = torch.pow(10, outrcs)
-        if batchsize > 1:
-            lossback=loss.mean() / accumulation_step 
-            lossback.backward() 
-        else:
-            outem = [int(in_em1[1]), int(in_em1[2]), float(f'{in_em1[3].item():.3f}')]
-            tqdm.write(f'em:{outem},loss:{loss.item():.4f}')
-            lossback=loss / accumulation_step
-            lossback.backward()
+        lossback=loss.mean() / accumulation_step 
+        lossback.backward() 
         epoch_loss.append(loss.item())
 
         torch.nn.utils.clip_grad_norm_(autoencoder.parameters(), max_norm=threshold)
@@ -317,27 +344,22 @@ for i in range(epoch):
         helmholtzLlist.append(metrics['helmholtz_loss'])
         bandlimitLlist.append(metrics['bandlimit_loss'])
         reciprocityLlist.append(metrics['reciprocity_loss'])
-
-                # metrics = {
-        #         'total_loss': total_loss,
-        #         'main_loss': mainloss,
-        #         'max_loss': maxloss,
-        #         'helmholtz_loss': helmholtz_loss,
-        #         'bandlimit_loss': bandlimit_loss,
-        #         'reciprocity_loss': reciprocity_loss,
-        #     }
-        
+        metrics_helmholtzlist.append(metrics['pinn_helmholtz'])
+        metrics_bandlimitlist.append(metrics['pinn_bandlimit'])
+        metrics_reciprocitylist.append(metrics['pinn_reciprocity'])
+        metrics_kramers_kroniglist.append(metrics['pinn_kramers_kronig'])
+        metrics_frequency_smoothnesslist.append(metrics['pinn_frequency_smoothness'])
 
         in_em0[1:] = [tensor.to(device) for tensor in in_em0[1:]]
         if flag == 1:
-            drawrcs = outrcs[0].unsqueeze(0)
+            drawrcs = decoded[0].unsqueeze(0)
             drawem = torch.stack(in_em0[1:]).t()[0]
             drawGT = rcs1[0].unsqueeze(0)
             drawplane = in_em0[0][0]
             flag = 0
         for j in range(torch.stack(in_em0[1:]).t().shape[0]):
             if flag == 0 and torch.equal(torch.stack(in_em0[1:]).t()[j], drawem):
-                drawrcs = outrcs[j].unsqueeze(0)
+                drawrcs = decoded[j].unsqueeze(0)
                 break
     logger.info(save_dir)
 
@@ -347,7 +369,7 @@ for i in range(epoch):
     if GTflag == 1:
         outGTpngpath = os.path.join(save_dir,f'{drawplane}theta{drawem[0]}phi{drawem[1]}freq{drawem[2]}_GT.png')
         out2DGTpngpath = os.path.join(save_dir,f'{drawplane}theta{drawem[0]}phi{drawem[1]}freq{drawem[2]}_2DGT.png')
-        plot4D_E_RealImage(drawGT.squeeze(), out2DGTpngpath, logger) #作图模块全线崩溃
+        plot4D_E_RealImage(drawGT.squeeze(), out2DGTpngpath, logger) 
         GTflag = 0
         logger.info('drawed GT map')
     if i == 0 or (i+1) % 20 == 0: 
@@ -365,6 +387,12 @@ for i in range(epoch):
     epoch_rmse = sum(rmse_list)/len(rmse_list)
     epoch_l1 = sum(l1_list)/len(l1_list)
     epoch_percentage_error = sum(percentage_error_list)/len(percentage_error_list)
+    epoch_metrics_helmholtz = sum(metrics_helmholtzlist)/len(metrics_helmholtzlist)
+    epoch_metrics_bandlimit = sum(metrics_bandlimitlist)/len(metrics_bandlimitlist)
+    epoch_metrics_reciprocity = sum(metrics_reciprocitylist)/len(metrics_reciprocitylist)
+    epoch_metrics_kramers_kronig = sum(metrics_kramers_kroniglist)/len(metrics_kramers_kroniglist)
+    epoch_metrics_frequency_smoothness = sum(metrics_frequency_smoothnesslist)/len(metrics_frequency_smoothnesslist)
+
     epoch_main_loss = sum(mainLlist)/len(mainLlist)
     epoch_max_loss = sum(maxLlist)/len(maxLlist)
     epoch_helmholtz_loss = sum(helmholtzLlist)/len(helmholtzLlist)
@@ -380,12 +408,18 @@ for i in range(epoch):
     rmses.append(epoch_rmse.detach().cpu())
     l1s.append(epoch_l1.detach().cpu())
     percentage_errors.append(epoch_percentage_error.detach().cpu())
-    mainLs.append(epoch_main_loss.detach().cpu())
-    # maxLs.append(epoch_max_loss.detach().cpu())
-    maxLs.append(epoch_max_loss)
-    helmholtzLs.append(epoch_helmholtz_loss)
-    bandlimitLs.append(epoch_bandlimit_loss)
-    reciprocityLs.append(epoch_reciprocity_loss)
+    helmholtzs.append(epoch_metrics_helmholtz.detach().cpu())
+    bandilimits.append(epoch_metrics_bandlimit.detach().cpu())
+    reciprocitys.append(epoch_metrics_reciprocity)
+    kks.append(epoch_metrics_kramers_kronig)
+    freq_smooths.append(epoch_metrics_frequency_smoothness)
+
+    mainLosses.append(epoch_main_loss)
+    maxLosses.append(epoch_max_loss)
+    helmholtzLosses.append(epoch_helmholtz_loss)
+    bandlimitLosses.append(epoch_bandlimit_loss)
+    reciprocityLosses.append(epoch_reciprocity_loss)
+
     logger.info('用于绘图的epoch metrics 计算完成')
 
     if bestloss > epoch_mean_loss:
@@ -425,20 +459,26 @@ for i in range(epoch):
     draw2dcurve(rmses, os.path.join(save_dir,'fig/rmse.png'), 'RMSE', 'Training RMSE Curve')
     draw2dcurve(l1s, os.path.join(save_dir,'fig/l1.png'), 'L1', 'Training L1 Curve')
     draw2dcurve(percentage_errors, os.path.join(save_dir,'fig/percentage_error.png'), 'Percentage Error', 'Training Percentage Error Curve')
-    draw2dcurve(mainLs, os.path.join(save_dir,'fig/mainloss.png'), 'Main Loss', 'Training Main Loss Curve')
-    draw2dcurve(maxLs, os.path.join(save_dir,'fig/maxloss.png'), 'Max Loss', 'Training Max Loss Curve')
-    draw2dcurve(helmholtzLs, os.path.join(save_dir,'fig/helmholtzloss.png'), 'Helmholtz Loss', 'Training Helmholtz Loss Curve')
-    draw2dcurve(bandlimitLs, os.path.join(save_dir,'fig/bandlimitloss.png'), 'Bandlimit Loss', 'Training Bandlimit Loss Curve')
-    draw2dcurve(reciprocityLs, os.path.join(save_dir,'fig/reciprocityloss.png'), 'Reciprocity Loss', 'Training Reciprocity Loss Curve')
+    draw2dcurve(helmholtzs, os.path.join(save_dir,'fig/helmholtz.png'), 'Helmholtz Metric', 'Training Helmholtz Metric Curve')
+    draw2dcurve(bandilimits, os.path.join(save_dir,'fig/bandlimit.png'), 'Bandlimit Metric', 'Training Bandlimit Metric Curve')
+    draw2dcurve(reciprocitys, os.path.join(save_dir,'fig/reciprocity.png'), 'Reciprocity Metric', 'Training Reciprocity Metric Curve')
+    draw2dcurve(kks, os.path.join(save_dir,'fig/kramers_kronig.png'), 'Kramers-Kronig Metric', 'Training Kramers-Kronig Metric Curve')
+    draw2dcurve(freq_smooths, os.path.join(save_dir,'fig/frequency_smoothness.png'), 'Frequency Smoothness Metric', 'Training Frequency Smoothness Metric Curve')
+
+    draw2dcurve(mainLosses, os.path.join(save_dir,'fig/mainloss.png'), 'Main Loss', 'Training Main Loss Curve')
+    draw2dcurve(maxLosses, os.path.join(save_dir,'fig/maxloss.png'), 'Max Loss', 'Training Max Loss Curve')
+    draw2dcurve(helmholtzLosses, os.path.join(save_dir,'fig/helmholtzloss.png'), 'Helmholtz Loss', 'Training Helmholtz Loss Curve')
+    draw2dcurve(bandlimitLosses, os.path.join(save_dir,'fig/bandlimitloss.png'), 'Bandlimit Loss', 'Training Bandlimit Loss Curve')
+    draw2dcurve(reciprocityLosses, os.path.join(save_dir,'fig/reciprocityloss.png'), 'Reciprocity Loss', 'Training Reciprocity Loss Curve')
 
 
     plt.clf() 
     plt.plot(range(0, i+1), losses, label='total_Loss')
-    plt.plot(range(0, i+1), mainLs, label='main_Loss')
-    plt.plot(range(0, i+1), maxLs, label='max_Loss')
-    plt.plot(range(0, i+1), helmholtzLs, label='helmholtz_Loss')
-    plt.plot(range(0, i+1), bandlimitLs, label='bandlimit_Loss')
-    plt.plot(range(0, i+1), reciprocityLs, label='reciprocity_Loss')
+    plt.plot(range(0, i+1), mainLosses, label='main_Loss')
+    plt.plot(range(0, i+1), maxLosses, label='max_Loss')
+    plt.plot(range(0, i+1), helmholtzLosses, label='helmholtz_Loss')
+    plt.plot(range(0, i+1), bandlimitLosses, label='bandlimit_Loss')
+    plt.plot(range(0, i+1), reciprocityLosses, label='reciprocity_Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('Training Loss Curves')

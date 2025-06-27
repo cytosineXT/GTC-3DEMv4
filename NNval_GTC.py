@@ -172,7 +172,6 @@ def plot4D_E_RealImage(ri_tensor, savedir, logger=None, use_same_max=False, cutm
     # logger.info(f'画图并保存到 {os.path.basename(savedir)} 用时：{time.time()-tic:.2f}s')
 
 
-
 def plotstatistic2(psnr_list, ssim_list, mse_list, statisticdir):
     def to_percent(y,position):
         return str(int((100*y)))
@@ -262,23 +261,28 @@ def valmain(draw, device, weight, rcsdir, save_dir, logger, epoch, trainval=Fals
             planesur_faces, planesur_verts, planesur_faceedges, geoinfo = process_files(objlist, device)
 
             start_time0 = time.time()
-            loss, outrcs, psnr_mean, psnrlist, ssim_mean, ssimlist, mse, nmse, rmse, l1, percentage_error, mselist, metrics= autoencoder( #这里使用网络，是进去跑了forward
+            decoded, metrics= autoencoder(
+            ## loss, outrcs, psnr_mean, psnrlist, ssim_mean, ssimlist, mse, nmse, rmse, l1, percentage_error, mselist, metrics= autoencoder( 
                 vertices = planesur_verts,
-                faces = planesur_faces, #torch.Size([batchsize, 33564, 3])
+                faces = planesur_faces, 
                 face_edges = planesur_faceedges,
-                in_em = in_em1,#.to(device)
+                in_em = in_em1,
                 GT = rcs1.to(device), 
                 logger = logger,
                 device = device,
             )
             inftime = time.time()-start_time0
+            psnrlist = metrics['psnrlist']
+            ssimlist = metrics['ssimlist']
+            mselist = metrics['mselist']
+            loss = metrics['total_loss']
 
             if trainval == False:
                 logger.info(f'one batch inference：{time.time()-start_time0:.4f}s，average one sample inference：{(time.time()-start_time0)/rcs1.shape[0]:.4f}s')
             # torch.cuda.empty_cache()
             if draw == True:
-                for i in range(outrcs.shape[0]): 
-                    single_outrcs = outrcs[i].squeeze().to(device) #这里i是batch索引
+                for i in range(decoded.shape[0]): 
+                    single_outrcs = decoded[i].squeeze().to(device) #这里i是batch索引
                     single_rcs1 = rcs1[i].squeeze().to(device)
                     single_diff = single_rcs1-single_outrcs
 

@@ -7,133 +7,14 @@ from torch import nn
 from torch_geometric.nn.conv import SAGEConv
 import torch.nn.functional as F
 import numpy as np
-from functools import partial
+# from functools import partial
 from net.utils import derive_face_edges_from_faces, transform_to_log_coordinates, psnr, batch_mse
 from net.utils import ssim as myssim
-from pytorch_msssim import ms_ssim, ssim
+from net.utils_pinn import bandlimit_energy_ratio, helmholtz_consistency, helmholtz_loss_4d, bandlimit_loss_4d, WeightedFieldLoss, reciprocity_loss_fn, maxloss_4d
+# from pytorch_msssim import ms_ssim, ssim
 from einops import rearrange, pack
 from math import pi
 
-# --- 物理先验损失函数 ---
-
-def calculate_helmholtz_loss(rcs_pred_batch, freqs_ghz, device): #这个还有严重问题，需要按实部虚部改 或者算出abs后送进这儿
-    """
-    计算亥姆霍兹方程残差损失。
-    要求生成的RCS图在物理上是自洽的。
-    """
-    laplacian_kernel = torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], 
-                                    dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
-    if rcs_pred_batch.dim() == 3:
-        rcs_pred_batch = rcs_pred_batch.unsqueeze(1)
-    laplacian_of_rcs = F.conv2d(rcs_pred_batch, laplacian_kernel, padding=1)
-    c = 299792458.0
-    k = (2 * pi * (freqs_ghz * 1e9) / c).view(-1, 1, 1, 1).to(device)
-    k_squared = k.pow(2)
-    helmholtz_residual = laplacian_of_rcs + k_squared * rcs_pred_batch
-    loss = torch.mean(helmholtz_residual.pow(2))
-    return torch.log1p(loss)
-
-def calculate_bandlimit_loss(rcs_pred, freqs_ghz, device, alpha=10.0):
-    """
-    计算频域带限损失。
-    惩罚那些与给定频率不匹配的、非物理的高频空间细节。
-    """
-    fft_pred = torch.fft.fftshift(torch.fft.fft2(rcs_pred, norm='ortho'), dim=(-2, -1))
-    c = 299792458.0
-    k = (2 * pi * (freqs_ghz * 1e9) / c).to(device)
-    cutoff_radii = (alpha * k).int()
-    h, w = rcs_pred.shape[-2:]
-    center_h, center_w = h // 2, w // 2
-    y, x = np.ogrid[-center_h:h-center_h, -center_w:w-center_w]
-    radius_grid = torch.from_numpy(np.sqrt(x*x + y*y)).to(device)
-    non_physical_mask = (radius_grid.unsqueeze(0) > cutoff_radii.view(-1, 1, 1)).float()
-    non_physical_energy = fft_pred.abs().pow(2) * non_physical_mask
-    loss = non_physical_energy.mean()
-    return loss
-
-def reciprocity_loss_fn(model, decoded_rcs, vertices, faces, face_edges, original_in_em, device):
-    """
-    (新增) 计算实时互易性损失。
-    通过一次额外的网络推理来验证互易定理。
-    """
-    batch_size, h, w = decoded_rcs.shape
-    plane_name, theta_in, phi_in, freq_in = original_in_em
-
-    # 1. 随机选择一个出射角 p_out，作为新的入射角 p_in'
-    rand_h = torch.randint(0, h, (batch_size,), device=device)
-    rand_w = torch.randint(0, w, (batch_size,), device=device)
-    
-    # 将像素坐标转换为角度
-    theta_out = rand_h * (180.0 / h)
-    phi_out = rand_w * (360.0 / w)
-    
-    # 2. 从第一次的预测结果中，获取p_out对应的值 value_1
-    value_1 = decoded_rcs[torch.arange(batch_size), rand_h, rand_w]
-
-    # 3. 将 p_out 作为新的输入，进行第二次前向传播
-    reciprocal_in_em = [plane_name, theta_out, phi_out, freq_in]
-    
-    # 这里的推理也需要梯度，所以正常调用
-    with torch.enable_grad():
-        encoded_rec, in_angle_rec, in_freq_rec = model.encode(
-            vertices=vertices, faces=faces, face_edges=face_edges, in_em=reciprocal_in_em
-        )
-        decoded_reciprocal = model.decode(
-            encoded_rec, in_angle_rec, in_freq_rec, device
-        )
-
-    # 4. 从第二次的预测结果中，获取对应原始入射角 p_in 的值 value_2
-    h_in_idx = (theta_in / 180.0 * h).long().clamp(0, h-1)
-    w_in_idx = (phi_in / 360.0 * w).long().clamp(0, w-1)
-    value_2 = decoded_reciprocal[torch.arange(batch_size), h_in_idx, w_in_idx]
-    
-    # 5. 计算互易性损失
-    loss = F.l1_loss(value_1, value_2) #mse=0.2511 l1=0.4264
-    return loss
-
-## --- 修改后的复合损失函数 ---
-# def loss_fn(decoded, GT, freqs_ghz, device, vertices, faces, face_edges, original_in_em, epochnow, pinnepoch, loss_type='L1', gama=0.001, lambda_helmholtz=0.1, lambda_bandlimit=0.1, lambda_reciprocity=0.1,self=None):
-#     """
-#     计算一个复合损失，包含监督损失和物理先验损失。
-#     """
-#     # 1. 计算监督损失 (与v2相同)
-#     maxloss = torch.mean(torch.abs(torch.amax(decoded, dim=(1, 2)) - torch.amax(GT, dim=(1, 2))))
-#     l1 = F.l1_loss(decoded, GT)
-#     mse = F.mse_loss(decoded, GT)
-    
-#     if loss_type == 'L1':
-#         supervision_loss = l1
-#     elif loss_type == 'mse':
-#         supervision_loss = mse
-#     else: # 默认为L1
-#         supervision_loss = l1
-        
-#     total_loss = supervision_loss + gama * maxloss
-#     l1loss = total_loss.clone()
-
-#     helmholtz_loss = 0
-#     bandlimit_loss = 0
-#     reciprocity_loss = 0
-
-#     if (pinnepoch > 0 and epochnow > pinnepoch) or pinnepoch <= 0 :#如果pinnloss从头开始，就0或者-1就行
-#         if lambda_helmholtz > 0:
-#             helmholtz_loss = calculate_helmholtz_loss(decoded, freqs_ghz, device)
-#             total_loss += lambda_helmholtz * helmholtz_loss
-
-#         if lambda_bandlimit > 0:
-#             bandlimit_loss = calculate_bandlimit_loss(decoded, freqs_ghz, device)
-#             total_loss += lambda_bandlimit * bandlimit_loss
-
-#         if lambda_reciprocity > 0:
-#             reciprocity_loss = reciprocity_loss_fn(self, decoded, vertices, faces, face_edges, original_in_em, device)
-#             total_loss += lambda_reciprocity * reciprocity_loss
-
-#     # l1 helm fft rec
-#     # 0.3893 8.5668 0.1235 0.4017
-
-#     return total_loss, l1loss, helmholtz_loss, bandlimit_loss, reciprocity_loss
-
-# --- 原有代码（保持不变）---
 def l2norm(t):
     return F.normalize(t, dim = -1, p = 2)
 
@@ -458,21 +339,27 @@ class MeshCodec(Module):
         return x
         # return x.permute(0, 2, 3, 1)  # (b, h, w, c) -> (b, c, h, w)
 
-
     def forward(self, *, vertices, faces, face_edges=None, in_em, GT=None, logger=None, device='cpu', loss_type='L1', **kwargs):
-        # 更新物理损失的权重
-        
-        epochnow = kwargs.get('epochnow', 0)
-        pinnepoch = kwargs.get('pinnepoch', 0)
+        # =========================================================================
+        #               Part 5: forward() 方法重大升级
+        # =========================================================================
+        original_in_em = [in_em[0], in_em[1].clone(), in_em[2].clone(), in_em[3].clone()]
+        original_freqs_ghz = in_em[3].clone()
+
+
+        # 1. 初始化损失函数和权重
+        loss_fn = WeightedFieldLoss(
+            alpha=kwargs.get('lambda_main', 10.0), 
+            loss_type=loss_type,
+        )
         lambda_max = kwargs.get('lambda_max', 0.0001)
         lambda_helmholtz = kwargs.get('lambda_helmholtz', 0)
         lambda_bandlimit = kwargs.get('lambda_bandlimit', 0)
-        lambda_reciprocity = kwargs.get('lambda_reciprocity', 0) # (新增)
+        lambda_reciprocity = kwargs.get('lambda_reciprocity', 0)
         
-        
-        # 保存原始输入，以供互易性损失计算使用
-        original_in_em = [in_em[0], in_em[1].clone(), in_em[2].clone(), in_em[3].clone()]
-        
+        epochnow = kwargs.get('epochnow', 0)
+        pinnepoch = kwargs.get('pinnepoch', 0)
+                
         if face_edges is None:
             face_edges = derive_face_edges_from_faces(faces, pad_id=-1)
 
@@ -483,49 +370,61 @@ class MeshCodec(Module):
 
         if GT is None:
             return decoded
+        
+        # 3. 如果是训练或验证，计算所有loss和指标
         else:
             if GT.shape[2:4] == (361, 720):
                 GT = GT[:, :, :-1, :]
             
-            mainloss = 0.
-            maxloss = 0.
-            helmholtz_loss = 0.
-            bandlimit_loss = 0.
-            reciprocity_loss = 0.
-
-            #-----------------------------------------------loss计算----------------------------------------------
-            # 1. mainloss
-            if loss_type == 'L1':
-                mainloss = F.l1_loss(decoded, GT)
-            elif loss_type == 'mse':
-                mainloss = F.mse_loss(decoded, GT)
-            else: # 默认为L1
-                mainloss = F.l1_loss(decoded, GT)
+            # # --- 核心Loss计算 ---
+            # 1. mainloss, weighted 
+            mainloss = loss_fn(decoded, GT)
             total_loss = mainloss.clone()
+            # 1. mainloss
+            # if loss_type == 'L1':
+            #     mainloss = F.l1_loss(decoded, GT)
+            # elif loss_type == 'mse':
+            #     mainloss = F.mse_loss(decoded, GT)
+            # else: # 默认为L1
+            #     mainloss = F.l1_loss(decoded, GT)
+            # total_loss = mainloss.clone()
+
+            # # 3.2 PINN 物理损失 (仅在pinnepoch之后激活)
+            helmholtz_loss, bandlimit_loss, reciprocity_loss, kk_loss, freq_smooth_loss = 0.,0.,0.,0.,0.
 
             # 2. maxloss
             if lambda_max > 0:
-                maxloss = torch.mean(torch.abs(torch.amax(decoded, dim=(1, 2)) - torch.amax(GT, dim=(1, 2))))
+                maxloss = maxloss_4d(decoded, GT)
                 total_loss += lambda_max * maxloss
 
-            if (pinnepoch >= 0 and epochnow > pinnepoch) or pinnepoch < 0 :#若有pinnepoch>=0，则仅当当前轮数大于pinnepoch时计算pinnloss；如果pinnloss=-1则从头开始
-                # 3. helmholtz_loss
+            if (pinnepoch >= 0 and epochnow > pinnepoch) or pinnepoch < 0 :
+                # 计算k0
+                c = 299792458.0
+                freqs_hz = original_freqs_ghz * 1e9
+                k0 = (2 * pi * freqs_hz / c).view(-1, 1, 1, 1).to(device)
+
+                # 计算亥姆霍兹损失
                 if lambda_helmholtz > 0:
-                    helmholtz_loss = calculate_helmholtz_loss(decoded, original_in_em[3], device)
+                    helmholtz_loss = helmholtz_loss_4d(decoded, k0)
                     total_loss += lambda_helmholtz * helmholtz_loss
 
-                # 4. bandlimit_loss
+                # 计算带限损失
                 if lambda_bandlimit > 0:
-                    bandlimit_loss = calculate_bandlimit_loss(decoded, original_in_em[3], device)
+                    bandlimit_loss = bandlimit_loss_4d(decoded, k0)
                     total_loss += lambda_bandlimit * bandlimit_loss
 
                 # 5. reciprocity_loss
                 if lambda_reciprocity > 0:
                     reciprocity_loss = reciprocity_loss_fn(self, decoded, vertices, faces, face_edges, original_in_em, device)
                     total_loss += lambda_reciprocity * reciprocity_loss
-            #-----------------------------------------------loss计算----------------------------------------------
-            
+                
+                # 6.计算Kramers-Kronig一致性损失（如果需要）
+                # if lambda_kramers_kronig > 0:
+                #     kk_loss = kramers_kronig_consistency(decoded)
+                
 
+            # --- 性能指标计算 ---
+            helm_metric, band_metric, reciprocity_metric, kk_metric, freq_smooth_metric = 0.,0.,0.,0.,0.
             with torch.no_grad():
                 psnr_list = psnr(decoded, GT)
                 ssim_list = myssim(decoded, GT)
@@ -538,14 +437,136 @@ class MeshCodec(Module):
                 rmse = torch.sqrt(mse)
                 l1 = (decoded-GT).abs().mean()
                 percentage_error = (minus / (GT + 1e-4)).abs().mean() * 100
+                
+                # PINN物理指标
+                c = 299792458.0
+                freqs_hz = original_freqs_ghz * 1e9
+                k0_metric = (2 * pi * freqs_hz / c).to(device) # .item() for single value
+                helm_metric = helmholtz_consistency(decoded, k0_metric)
+                band_metric = bandlimit_energy_ratio(decoded, k0_metric)
+                # kk_metric = kramers_kronig_consistency(...)
+                # freq_smooth_metric = frequency_smoothness(...)
 
+
+            # 封装所有损失和指标以便返回和记录
             metrics = {
+                'psnr': mean_psnr,
+                'ssim': mean_ssim,
+                'mse': mse,
+                'psnrlist': psnr_list,
+                'ssimlist': ssim_list,
+                'mselist': mse_list,
+
+                'nmse': nmse,
+                'rmse': rmse,
+                'l1': l1,
+                'percentage_error': percentage_error,
+                'pinn_helmholtz': helm_metric,
+                'pinn_bandlimit': band_metric,
+                'pinn_reciprocity': reciprocity_metric,
+                'pinn_kramers_kronig': kk_metric, 
+                'pinn_frequency_smoothness': freq_smooth_metric, 
+
                 'total_loss': total_loss,
                 'main_loss': mainloss,
                 'max_loss': maxloss,
                 'helmholtz_loss': helmholtz_loss,
                 'bandlimit_loss': bandlimit_loss,
                 'reciprocity_loss': reciprocity_loss,
+                'kramers_kronig_loss': kk_loss,
+                'freq_smooth_loss': freq_smooth_loss,
             }
 
-            return total_loss, decoded, mean_psnr, psnr_list, mean_ssim, ssim_list, mse, nmse, rmse, l1, percentage_error, mse_list, metrics
+            return decoded, metrics
+            # return total_loss, decoded, mean_psnr, psnr_list, mean_ssim, ssim_list, mse, nmse, rmse, l1, percentage_error, mse_list, metrics
+        
+    # def forward(self, *, vertices, faces, face_edges=None, in_em, GT=None, logger=None, device='cpu', loss_type='L1', **kwargs):
+    #     # 更新物理损失的权重
+        
+    #     epochnow = kwargs.get('epochnow', 0)
+    #     pinnepoch = kwargs.get('pinnepoch', 0)
+    #     lambda_max = kwargs.get('lambda_max', 0.0001)
+    #     lambda_helmholtz = kwargs.get('lambda_helmholtz', 0)
+    #     lambda_bandlimit = kwargs.get('lambda_bandlimit', 0)
+    #     lambda_reciprocity = kwargs.get('lambda_reciprocity', 0) # (新增)
+        
+        
+    #     # 保存原始输入，以供互易性损失计算使用
+    #     original_in_em = [in_em[0], in_em[1].clone(), in_em[2].clone(), in_em[3].clone()]
+        
+    #     if face_edges is None:
+    #         face_edges = derive_face_edges_from_faces(faces, pad_id=-1)
+
+    #     encoded, in_angle, in_freq = self.encode(
+    #         vertices=vertices, faces=faces, face_edges=face_edges, in_em=in_em)
+
+    #     decoded = self.decode(encoded, in_angle, in_freq, device)
+
+    #     if GT is None:
+    #         return decoded
+    #     else:
+    #         if GT.shape[2:4] == (361, 720):
+    #             GT = GT[:, :, :-1, :]
+            
+    #         mainloss = 0.
+    #         maxloss = 0.
+    #         helmholtz_loss = 0.
+    #         bandlimit_loss = 0.
+    #         reciprocity_loss = 0.
+
+    #         #-----------------------------------------------loss计算----------------------------------------------
+    #         # 1. mainloss
+    #         if loss_type == 'L1':
+    #             mainloss = F.l1_loss(decoded, GT)
+    #         elif loss_type == 'mse':
+    #             mainloss = F.mse_loss(decoded, GT)
+    #         else: # 默认为L1
+    #             mainloss = F.l1_loss(decoded, GT)
+    #         total_loss = mainloss.clone()
+
+    #         # 2. maxloss
+    #         if lambda_max > 0:
+    #             maxloss = torch.mean(torch.abs(torch.amax(decoded, dim=(1, 2)) - torch.amax(GT, dim=(1, 2))))
+    #             total_loss += lambda_max * maxloss
+
+    #         if (pinnepoch >= 0 and epochnow > pinnepoch) or pinnepoch < 0 :#若有pinnepoch>=0，则仅当当前轮数大于pinnepoch时计算pinnloss；如果pinnloss=-1则从头开始
+    #             # 3. helmholtz_loss
+    #             if lambda_helmholtz > 0:
+    #                 helmholtz_loss = calculate_helmholtz_loss(decoded, original_in_em[3], device)
+    #                 total_loss += lambda_helmholtz * helmholtz_loss
+
+    #             # 4. bandlimit_loss
+    #             if lambda_bandlimit > 0:
+    #                 bandlimit_loss = calculate_bandlimit_loss(decoded, original_in_em[3], device)
+    #                 total_loss += lambda_bandlimit * bandlimit_loss
+
+    #             # 5. reciprocity_loss
+    #             if lambda_reciprocity > 0:
+    #                 reciprocity_loss = reciprocity_loss_fn(self, decoded, vertices, faces, face_edges, original_in_em, device)
+    #                 total_loss += lambda_reciprocity * reciprocity_loss
+    #         #-----------------------------------------------loss计算----------------------------------------------
+            
+
+    #         with torch.no_grad():
+    #             psnr_list = psnr(decoded, GT)
+    #             ssim_list = myssim(decoded, GT)
+    #             mse_list = batch_mse(decoded, GT)
+    #             mean_psnr = psnr_list.mean()
+    #             mean_ssim = ssim_list.mean()
+    #             minus = decoded - GT
+    #             mse = ((minus) ** 2).mean()
+    #             nmse = mse / torch.var(GT)
+    #             rmse = torch.sqrt(mse)
+    #             l1 = (decoded-GT).abs().mean()
+    #             percentage_error = (minus / (GT + 1e-4)).abs().mean() * 100
+
+    #         metrics = {
+    #             'total_loss': total_loss,
+    #             'main_loss': mainloss,
+    #             'max_loss': maxloss,
+    #             'helmholtz_loss': helmholtz_loss,
+    #             'bandlimit_loss': bandlimit_loss,
+    #             'reciprocity_loss': reciprocity_loss,
+    #         }
+
+    #         return total_loss, decoded, mean_psnr, psnr_list, mean_ssim, ssim_list, mse, nmse, rmse, l1, percentage_error, mse_list, metrics
