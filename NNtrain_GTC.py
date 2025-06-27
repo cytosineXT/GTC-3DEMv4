@@ -31,12 +31,11 @@ def setup_seed(seed):
 def parse_args():
     parser = argparse.ArgumentParser(description="Script with customizable parameters using argparse.")
     parser.add_argument('--epoch', type=int, default=2, help='Number of training epochs')
-    parser.add_argument('--batch', type=int, default=12, help='batchsize')
-    parser.add_argument('--valbatch', type=int, default=12, help='valbatchsize')
-    parser.add_argument('--smooth', type=bool, default=False, help='Whether to use pretrained weights')
+    parser.add_argument('--batch', type=int, default=16, help='batchsize')
+    parser.add_argument('--valbatch', type=int, default=16, help='valbatchsize')
     parser.add_argument('--draw', type=bool, default=True, help='Whether to enable drawing')
 
-    parser.add_argument('--trainname', type=str, default='v3.3n', help='logname')
+    parser.add_argument('--trainname', type=str, default='v4.0', help='logname')
     parser.add_argument('--savedir', type=str, default='testtrain', help='exp output folder name')
     parser.add_argument('--mode', type=str, default='fasttest', help='10train 50fine 100fine fasttest')
     parser.add_argument('--loss', type=str, default='L1', help='L1 best, mse 2nd')
@@ -50,11 +49,11 @@ def parse_args():
 
     parser.add_argument('--seed', type=int, default=7, help='Random seed for reproducibility')
     parser.add_argument('--attn', type=int, default=0, help='Transformer layers')
-    parser.add_argument('--lr', type=float, default=0.001, help='Loss threshold or gamma parameter')
+    parser.add_argument('--lr', type=float, default=0.0001, help='Loss threshold or gamma parameter')
     parser.add_argument('--cuda', type=str, default='cuda:0', help='CUDA device to use(cpu cuda:0 cuda:1...)')
     parser.add_argument('--fold', type=str, default=None, help='Fold to use for validation (None fold1 fold2 fold3 fold4)')
 
-    parser.add_argument('--lam_max', type=float, default=0, help='control max loss, i love 0.001')
+    parser.add_argument('--lam_max', type=float, default=0.001, help='control max loss, i love 0.001')
     parser.add_argument('--lam_hel', type=float, default=0, help='control helmholtz loss, i love 0.001')
     parser.add_argument('--lam_fft', type=float, default=0, help='control fft loss, i love 0.001')
     parser.add_argument('--lam_rec', type=float, default=0, help='control receprocity loss, i love 0.001')
@@ -76,7 +75,6 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))
 args = parse_args()
 
 epoch = args.epoch
-smooth = args.smooth
 draw = args.draw
 pretrainweight = args.pretrainweight
 seed = args.seed
@@ -157,7 +155,7 @@ oneplane = args.rcsdir.split('/')[-1][0:4]
 
 from datetime import datetime
 date = datetime.today().strftime("%m%d")
-save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}{loss_type}_{args.fold if args.fold else oneplane}_b{batchsize}e{epoch}lr{learning_rate}sd{seed}Tr{attnlayer}_{cudadevice}_'), exist_ok=False))
+save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}{loss_type}_{args.fold if args.fold else oneplane}_b{batchsize}e{epoch}lr{learning_rate}sd{seed}Tr{attnlayer}_lm{lambda_max}_{cudadevice}_'), exist_ok=False))
 # save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}{loss_type}_{args.fold if args.fold else oneplane}_b{batchsize}e{epoch}ep{args.pinnepoch}Tr{attnlayer}_lh{lambda_helmholtz}lf{lambda_bandlimit}lc{lambda_reciprocity}_{cudadevice}_'), exist_ok=False))
 
 lastsavedir = os.path.join(save_dir,'last.pt')

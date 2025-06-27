@@ -10,6 +10,24 @@ from torch.nn.utils.rnn import pad_sequence
 from torchtyping import TensorType
 from einops import rearrange, reduce
 
+def compute_total_from_RI(ri_tensor):
+    E_theta_real = ri_tensor[0, :, :] #网络运行的数据channel维在最前面
+    E_theta_imagine = ri_tensor[1, :, :]
+    E_phi_real = ri_tensor[2, :, :]
+    E_phi_imagine = ri_tensor[3, :, :]
+    E_abs_theta = torch.sqrt(E_theta_real**2 + E_theta_imagine**2)
+    E_abs_phi = torch.sqrt(E_phi_real**2 + E_phi_imagine**2)
+    E_phase_theta_rad = torch.atan2(E_theta_imagine, E_theta_real)
+    E_phase_phi_rad = torch.atan2(E_phi_imagine, E_phi_real)
+    delta_phi_rad = E_phase_theta_rad - E_phase_phi_rad
+    E_abs_theta_sq = E_abs_theta**2
+    E_abs_phi_sq = E_abs_phi**2
+    term1 = E_abs_theta_sq + E_abs_phi_sq
+    term2_inner_sqrt = torch.sqrt((E_abs_theta_sq - E_abs_phi_sq)**2 + 4 * E_abs_theta_sq * E_abs_phi_sq * (torch.cos(delta_phi_rad))**2)
+    E_total_abs_sq = 0.5 * (term1 + term2_inner_sqrt)
+    E_total_abs_compute = torch.sqrt(E_total_abs_sq)
+    return E_total_abs_compute
+
 def savefigdata(*datas, img_path):
     """
     自动保存多个绘图数据到与图片同路径的 'data' 文件夹下，覆盖每次保存。

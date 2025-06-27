@@ -1,7 +1,7 @@
 import torch
 import time
 from net.GTC_3DEMv4 import MeshCodec
-from net.utils import increment_path, EMRCSDataset, get_logger, find_matching_files, process_files,savefigdata
+from net.utils import increment_path, EMRCSDataset, get_logger, find_matching_files, process_files,savefigdata, compute_total_from_RI
 import torch.utils.data.dataloader as DataLoader
 # import trimesh
 from pathlib import Path
@@ -79,8 +79,8 @@ def plot2DRCS(rcs, savedir,logger,cutmax,cutmin=None):
     else:
         print(f'draw time consume：{time.time()-tic:.4f}s')
      
-# def plot4D_E_RealImage(ri_tensor, savedir, use_same_max=False):
-def plot4D_E_RealImage(ri_tensor, savedir, logger=None, use_same_max=False):
+
+def plot4D_E_RealImage(ri_tensor, savedir, logger=None, use_same_max=False, cutmax=None):
     """
     可视化Real-Image (实部-虚部) 4D张量，并算出总场同步绘制。输入四维须为Real(E_theta) Imag(E_theta) Real(E_phi) Imag(E_phi)的格式。
 
@@ -116,29 +116,22 @@ def plot4D_E_RealImage(ri_tensor, savedir, logger=None, use_same_max=False):
     # # E_total_abs_gt = torch.load('/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_Amphase/b7fd_E_mie_train/b7fd_theta60phi30f0.39.pt')[:, :, 0] # 直接加载总场强的实部
 
     # --- 3. 从实部虚部正确计算总场强（极化椭圆长半轴）---
-    E_abs_theta = torch.sqrt(E_theta_real**2 + E_theta_imagine**2)
-    E_abs_phi = torch.sqrt(E_phi_real**2 + E_phi_imagine**2)
-    E_phase_theta_rad = torch.atan2(E_theta_imagine, E_theta_real)
-    E_phase_phi_rad = torch.atan2(E_phi_imagine, E_phi_real)
-    delta_phi_rad = E_phase_theta_rad - E_phase_phi_rad
-    E_abs_theta_sq = E_abs_theta**2
-    E_abs_phi_sq = E_abs_phi**2
-    term1 = E_abs_theta_sq + E_abs_phi_sq
-    term2_inner_sqrt = torch.sqrt((E_abs_theta_sq - E_abs_phi_sq)**2 + 4 * E_abs_theta_sq * E_abs_phi_sq * (torch.cos(delta_phi_rad))**2)
-    E_total_abs_sq = 0.5 * (term1 + term2_inner_sqrt)
-    E_total_abs_compute = torch.sqrt(E_total_abs_sq)
+    E_total_abs_compute = compute_total_from_RI(ri_tensor)
 
     # --- 4. 准备绘图数据 ---
     fig, axes = plt.subplots(3, 2, figsize=(14, 15))
     fig.suptitle('E-Field Real/Imaginary Components', fontsize=16)
 
+    if not cutmax:
+        cutmax = [None, None, None, None, None]
+
     components_data = [
-        (E_theta_real, 'Real(E_theta)', 'V/m'),
-        (E_theta_imagine, 'Imag(E_theta)', 'V/m'),
-        (E_phi_real, 'Real(E_phi)', 'V/m'),
-        (E_phi_imagine, 'Imag(E_phi)', 'V/m'),
+        (E_theta_real, 'Real(E_theta)', 'V/m', cutmax[0]),
+        (E_theta_imagine, 'Imag(E_theta)', 'V/m', cutmax[1]),
+        (E_phi_real, 'Real(E_phi)', 'V/m', cutmax[2]),
+        (E_phi_imagine, 'Imag(E_phi)', 'V/m', cutmax[3]),
         # (E_total_abs_gt, 'Total E-Field GT', 'V/m'),
-        (E_total_abs_compute, 'Total E-Field Computed', 'V/m')
+        (E_total_abs_compute, 'Total E-Field Computed', 'V/m', cutmax[4])
     ]
     
     # --- 5. 新增功能：计算全局颜色范围 ---
@@ -153,20 +146,14 @@ def plot4D_E_RealImage(ri_tensor, savedir, logger=None, use_same_max=False):
 
     # --- 6. 绘制 3x2 六子图 ---
     ax_flat = axes.flatten()
-
-    for i, (data, title, label) in enumerate(components_data):
+    for i, (data, title, label, cutmax1) in enumerate(components_data):
         ax = ax_flat[i]
-        
         # 根据 use_same_max 参数决定 vmin 和 vmax
         if use_same_max:
             vmin, vmax = global_min, global_max
         else:
-            # 默认行为：只统一最后两个总场图的颜色范围 也不要了
-            vmin, vmax = None, None
-            # if 'Total E-Field' in title:
-            #     vmin = min(E_total_abs_gt.min(), E_total_abs_compute.min()).item()
-            #     vmax = max(E_total_abs_gt.max(), E_total_abs_compute.max()).item()
-
+            vmin, vmax = None, cutmax1
+        
         im = ax.imshow(data.detach().cpu().numpy(), cmap='jet', origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
         ax.set_title(title)
         ax.set_xlabel("Theta Index")
@@ -307,12 +294,12 @@ def valmain(draw, device, weight, rcsdir, save_dir, logger, epoch, trainval=Fals
                     # out3dGTpngpath = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_GT.png')
 
                     out2DGTpngpath = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_2DGT.png')
-                    out2Drcspngpath = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_psnr{psnr1:.2f}_ssim{ssim1:.4f}_mse{mse1:.4f}_2D.png')
-                    # out2Drcspngpathcut = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_psnr{psnr1:.2f}_ssim{ssim1:.4f}_mse{mse1:.4f}_2Dcut.png')
+                    out2DEpngpath = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_psnr{psnr1:.2f}_ssim{ssim1:.4f}_mse{mse1:.4f}_2D.png')
+                    out2DEpngpathcut = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_psnr{psnr1:.2f}_ssim{ssim1:.4f}_mse{mse1:.4f}_2Dcut.png')
                     # out2Drcspngpathdiff = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_psnr{psnr1:.2f}_ssim{ssim1:.4f}_mse{mse1:.4f}_diff{(torch.max(torch.abs(torch.max(single_diff)),torch.abs(torch.min(single_diff)))).item():.4f}_2Ddiff.png')
                     plot4D_E_RealImage(single_rcs1, savedir=out2DGTpngpath, logger=logger)
-                    plot4D_E_RealImage(single_outrcs, savedir=out2Drcspngpath, logger=logger)
-                    # plot4D_E_RealImage(rcs=single_outrcs, savedir=out2Drcspngpathcut, logger=logger,cutmax=torch.max(single_rcs1).item())
+                    plot4D_E_RealImage(single_outrcs, savedir=out2DEpngpath, logger=logger)
+                    plot4D_E_RealImage(single_outrcs, savedir=out2DEpngpathcut, logger=logger,cutmax=[torch.max(single_rcs1[0]).item(),torch.max(single_rcs1[1]).item(),torch.max(single_rcs1[2]).item(),torch.max(single_rcs1[3]).item(),None])
                     # plot4D_E_RealImage(single_diff, savedir=out2Drcspngpathdiff, logger=logger)
 
                     # if draw3d == True:
