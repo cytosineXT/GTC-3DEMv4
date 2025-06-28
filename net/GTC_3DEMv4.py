@@ -181,7 +181,11 @@ class MeshCodec(Module):
         self.bn3_1 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层1
         self.bn3_2 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层2
         # self.conv1x1 = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        self.conv1x1 = nn.Conv2d(int(middim/8), 4, kernel_size=1, stride=1, padding=0) #在这里运行复电场预测 四维就行
+        # self.conv1x1 = nn.Conv2d(int(middim/8), 4, kernel_size=1, stride=1, padding=0) #在这里运行复电场预测 四维就行
+        self.head_re_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        self.head_im_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        self.head_re_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        self.head_im_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
 
         
     def encode(
@@ -333,10 +337,15 @@ class MeshCodec(Module):
         # x = x + condangle5
         # x = x + condfreq5
 
-        x = self.conv1x1(x)
+        # x = self.conv1x1(x)
         # torch.Size([10, 1, 360, 720])
-
-        return x
+        out_re_etheta = self.head_re_etheta(x)
+        out_im_etheta = self.head_im_etheta(x)
+        out_re_ephi = self.head_re_ephi(x)
+        out_im_ephi = self.head_im_ephi(x)
+        
+        return torch.cat([out_re_etheta, out_im_etheta, out_re_ephi, out_im_ephi], dim=1)
+        # return x
         # return x.permute(0, 2, 3, 1)  # (b, h, w, c) -> (b, c, h, w)
 
     def forward(self, *, vertices, faces, face_edges=None, in_em, GT=None, logger=None, device='cpu', loss_type='L1', **kwargs):

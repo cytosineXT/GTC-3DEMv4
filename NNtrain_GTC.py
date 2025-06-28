@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--valbatch', type=int, default=16, help='valbatchsize')
     parser.add_argument('--draw', type=bool, default=True, help='Whether to enable drawing')
 
-    parser.add_argument('--trainname', type=str, default='v4.1', help='logname')
+    parser.add_argument('--trainname', type=str, default='v4.2', help='logname')
     parser.add_argument('--savedir', type=str, default='testtrain', help='exp output folder name')
     parser.add_argument('--mode', type=str, default='fasttest', help='10train 50fine 100fine fasttest')
     parser.add_argument('--loss', type=str, default='L1', help='L1 best, mse 2nd')
