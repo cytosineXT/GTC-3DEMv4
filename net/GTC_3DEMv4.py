@@ -161,23 +161,23 @@ class MeshCodec(Module):
 
         #---Decoder
         # Decoder3
-        self.upconv1 = nn.ConvTranspose2d(middim, int(middim/2), kernel_size=2, stride=2)
+        self.upconv1 = nn.ConvTranspose2d(middim, int(middim/2), kernel_size=2, stride=2, groups=4)
         self.bn1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
-        self.conv1_1 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
-        self.conv1_2 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1)  # 添加的卷积层2
+        self.conv1_1 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
+        self.conv1_2 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层2
         self.bn1_1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
         self.bn1_2 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层2
-        self.upconv2 = nn.ConvTranspose2d(int(middim/2), int(middim/4), kernel_size=2, stride=2)
+        self.upconv2 = nn.ConvTranspose2d(int(middim/2), int(middim/4), kernel_size=2, stride=2, groups=4)
         self.bn2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
-        self.conv2_1 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
-        self.conv2_2 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1)  # 添加的卷积层2
+        self.conv2_1 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
+        self.conv2_2 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层2
         self.bn2_1 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
         self.bn2_2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层2
-        self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2)
+        self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2, groups=4)
         # self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2, output_padding=1)
         self.bn3 = nn.BatchNorm2d(int(middim/8))
-        self.conv3_1 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
-        self.conv3_2 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
+        self.conv3_1 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
+        self.conv3_2 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
         self.bn3_1 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层1
         self.bn3_2 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层2
         # self.conv1x1 = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
@@ -186,6 +186,32 @@ class MeshCodec(Module):
         self.head_im_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
         self.head_re_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
         self.head_im_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+
+        # self.upconv1 = nn.ConvTranspose2d(middim, int(middim/2), kernel_size=2, stride=2)
+        # self.bn1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
+        # self.conv1_1 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
+        # self.conv1_2 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1)  # 添加的卷积层2
+        # self.bn1_1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
+        # self.bn1_2 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层2
+        # self.upconv2 = nn.ConvTranspose2d(int(middim/2), int(middim/4), kernel_size=2, stride=2)
+        # self.bn2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
+        # self.conv2_1 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
+        # self.conv2_2 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1)  # 添加的卷积层2
+        # self.bn2_1 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
+        # self.bn2_2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层2
+        # self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2)
+        # # self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2, output_padding=1)
+        # self.bn3 = nn.BatchNorm2d(int(middim/8))
+        # self.conv3_1 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
+        # self.conv3_2 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
+        # self.bn3_1 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层1
+        # self.bn3_2 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层2
+        # # self.conv1x1 = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        # # self.conv1x1 = nn.Conv2d(int(middim/8), 4, kernel_size=1, stride=1, padding=0) #在这里运行复电场预测 四维就行
+        # self.head_re_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        # self.head_im_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        # self.head_re_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        # self.head_im_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
 
         
     def encode(
@@ -343,7 +369,7 @@ class MeshCodec(Module):
         out_im_etheta = self.head_im_etheta(x)
         out_re_ephi = self.head_re_ephi(x)
         out_im_ephi = self.head_im_ephi(x)
-        
+
         return torch.cat([out_re_etheta, out_im_etheta, out_re_ephi, out_im_ephi], dim=1)
         # return x
         # return x.permute(0, 2, 3, 1)  # (b, h, w, c) -> (b, c, h, w)
