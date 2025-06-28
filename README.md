@@ -37,8 +37,9 @@ E_total_abs_compute = torch.sqrt(E_total_abs_sq)
 
 ## v4.0
 2025年6月26日16:31:46 成功跑通 开始训练原生GTC-3DEMv4.0 无复数网络 无PINNloss 无任何先验
-效果不好，学不到东西
+效果不好，学不到东西，不知为何
 
 ## v4.1
 2025年6月27日20:48:40 加了一堆乱七八糟的，但是还未全验证，分为指标/loss，具体有加权L1 maxminloss，和helmholtz bandlimit kramers_kronig_consistency frequency_smoothness；
 实验思想是一个一个加，先把指标全用上，然后loss一个一个加。部分接口已经预留好了，先从加权L1开始
+2025年6月28日10:24:01 加权L1无效 看看maxminloss

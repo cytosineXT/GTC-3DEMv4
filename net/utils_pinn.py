@@ -85,7 +85,7 @@ def helmholtz_consistency(E_field_4d, k0):
         k0 (torch.Tensor): 自由空间波数，形状应为 [B]
 
     Returns:
-        torch.Tensor: 一个标量，表示平均的亥姆霍兹方程残差。
+        torch.Tensor: 一个标量，表示平均的亥姆霍兹方程残差。越小越好
     """
     with torch.no_grad():
         # 分离 E_theta 和 E_phi 的复数场
@@ -133,7 +133,7 @@ def bandlimit_energy_ratio(E_field_4d, k0, radius_factor=1.5): #这里怎么也�
         radius_factor (float): 定义带内区域的半径因子。
 
     Returns:
-        torch.Tensor: 一个标量，表示带外能量的平均比例。
+        torch.Tensor: 一个标量，表示带外能量的平均比例。越小越好
     """
     with torch.no_grad():
         B, _, H, W = E_field_4d.shape
