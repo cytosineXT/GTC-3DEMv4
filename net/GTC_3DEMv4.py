@@ -349,7 +349,7 @@ class MeshCodec(Module):
 
         # 1. 初始化损失函数和权重
         loss_fn = WeightedFieldLoss(
-            alpha=kwargs.get('lambda_main', 10.0), 
+            lambda_main=kwargs.get('lambda_main', 10.0), 
             loss_type=loss_type,
         )
         lambda_max = kwargs.get('lambda_max', 0.0001)
@@ -390,7 +390,7 @@ class MeshCodec(Module):
             # total_loss = mainloss.clone()
 
             # # 3.2 PINN 物理损失 (仅在pinnepoch之后激活)
-            helmholtz_loss, bandlimit_loss, reciprocity_loss, kk_loss, freq_smooth_loss = 0.,0.,0.,0.,0.
+            maxloss, helmholtz_loss, bandlimit_loss, reciprocity_loss, kk_loss, freq_smooth_loss = 0.,0.,0.,0.,0.,0.
 
             # 2. maxloss
             if lambda_max > 0:

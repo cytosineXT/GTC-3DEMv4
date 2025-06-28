@@ -26,19 +26,14 @@ class WeightedFieldLoss(nn.Module):
     def __init__(self, lambda_main=10.0, loss_type='L1'):
         """
         初始化加权损失函数。
-
-        Args:
-            alpha (float): 权重增强因子。alpha越大，模型越关注高绝对值的区域。
-            l1_weight (float): L1损失部分的权重。
-            mse_weight (float): MSE损失部分的权重。(默认关闭MSE部分)
         """
         super().__init__()
         self.lam_main = lambda_main
         self.loss_type = loss_type
-        if self.lam_main > 0:
-            print(f"初始化独立加权损失函数: lam_main={self.lam_main}, 损失类型={self.loss_type}")
-        else:
-            print(f"初始化标准损失函数 (lam_main=0): 损失类型={self.loss_type}")
+        # if self.lam_main > 0:
+        #     print(f"初始化独立加权损失函数: lam_main={self.lam_main}, 损失类型={self.loss_type}")
+        # else:
+        #     print(f"初始化标准损失函数 (lam_main=0): 损失类型={self.loss_type}")
 
     def forward(self, decoded, gt):
         """
@@ -51,8 +46,8 @@ class WeightedFieldLoss(nn.Module):
         Returns:
             torch.Tensor: 一个标量损失值。
         """
-        if self.alpha <= 0:
-            # 如果alpha为0或负，则退化为标准loss
+        if self.lam_main <= 0:
+            # 如果lam_main为0或负，则退化为标准loss
             l1_loss = F.l1_loss(decoded, gt) if self.loss_type == 'l1' else 0.
             mse_loss = F.mse_loss(decoded, gt) if self.loss_type == 'mse' else 0.
             return l1_loss + mse_loss

@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--valbatch', type=int, default=16, help='valbatchsize')
     parser.add_argument('--draw', type=bool, default=True, help='Whether to enable drawing')
 
-    parser.add_argument('--trainname', type=str, default='v4.0', help='logname')
+    parser.add_argument('--trainname', type=str, default='v4.1', help='logname')
     parser.add_argument('--savedir', type=str, default='testtrain', help='exp output folder name')
     parser.add_argument('--mode', type=str, default='fasttest', help='10train 50fine 100fine fasttest')
     parser.add_argument('--loss', type=str, default='L1', help='L1 best, mse 2nd')
@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument('--fold', type=str, default=None, help='Fold to use for validation (None fold1 fold2 fold3 fold4)')
 
     parser.add_argument('--lam_main', type=float, default=10, help='control main loss, i love 0.001')
-    parser.add_argument('--lam_max', type=float, default=0.001, help='control max loss, i love 0.001')
+    parser.add_argument('--lam_max', type=float, default=0, help='control max loss, i love 0.001')
     parser.add_argument('--lam_hel', type=float, default=0, help='control helmholtz loss, i love 0.001')
     parser.add_argument('--lam_fft', type=float, default=0, help='control fft loss, i love 0.001')
     parser.add_argument('--lam_rec', type=float, default=0, help='control receprocity loss, i love 0.001')
@@ -147,7 +147,6 @@ corrupted_files = []
 lgrcs = False
 shuffle = True
 multigpu = False
-alpha = 0.0
 lr_time = epoch
 
 encoder_layer = 6
@@ -157,7 +156,7 @@ oneplane = args.rcsdir.split('/')[-1][0:4]
 
 from datetime import datetime
 date = datetime.today().strftime("%m%d")
-save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}_{args.fold if args.fold else oneplane}_sd{seed}_l1{lambda_main}lm{lambda_max}_{cudadevice}_'), exist_ok=False))
+save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}_{args.fold if args.fold else oneplane}_sd{seed}_L{lambda_main}lm{lambda_max}_{cudadevice}_'), exist_ok=False))
 # save_dir = str(increment_path(Path(ROOT / "output" / f"{folder}" / f'{date}_{name}_{mode}{loss_type}_{args.fold if args.fold else oneplane}_b{batchsize}e{epoch}ep{args.pinnepoch}Tr{attnlayer}_lh{lambda_helmholtz}lf{lambda_bandlimit}lc{lambda_reciprocity}_{cudadevice}_'), exist_ok=False))
 
 lastsavedir = os.path.join(save_dir,'last.pt')
@@ -459,8 +458,9 @@ for i in range(epoch):
     draw2dcurve(rmses, os.path.join(save_dir,'fig/rmse.png'), 'RMSE', 'Training RMSE Curve')
     draw2dcurve(l1s, os.path.join(save_dir,'fig/l1.png'), 'L1', 'Training L1 Curve')
     draw2dcurve(percentage_errors, os.path.join(save_dir,'fig/percentage_error.png'), 'Percentage Error', 'Training Percentage Error Curve')
-    draw2dcurve(helmholtzs, os.path.join(save_dir,'fig/helmholtz.png'), 'Helmholtz Metric', 'Training Helmholtz Metric Curve')
-    draw2dcurve(bandilimits, os.path.join(save_dir,'fig/bandlimit.png'), 'Bandlimit Metric', 'Training Bandlimit Metric Curve')
+
+    draw2dcurve(helmholtzs, os.path.join(save_dir,'helmholtz.png'), 'Helmholtz Metric', 'Training Helmholtz Metric Curve')
+    draw2dcurve(bandilimits, os.path.join(save_dir,'bandlimit.png'), 'Bandlimit Metric', 'Training Bandlimit Metric Curve')
     draw2dcurve(reciprocitys, os.path.join(save_dir,'fig/reciprocity.png'), 'Reciprocity Metric', 'Training Reciprocity Metric Curve')
     draw2dcurve(kks, os.path.join(save_dir,'fig/kramers_kronig.png'), 'Kramers-Kronig Metric', 'Training Kramers-Kronig Metric Curve')
     draw2dcurve(freq_smooths, os.path.join(save_dir,'fig/frequency_smoothness.png'), 'Frequency Smoothness Metric', 'Training Frequency Smoothness Metric Curve')
