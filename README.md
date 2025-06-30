@@ -43,3 +43,13 @@ E_total_abs_compute = torch.sqrt(E_total_abs_sq)
 2025年6月27日20:48:40 加了一堆乱七八糟的，但是还未全验证，分为指标/loss，具体有加权L1 maxminloss，和helmholtz bandlimit kramers_kronig_consistency frequency_smoothness；
 实验思想是一个一个加，先把指标全用上，然后loss一个一个加。部分接口已经预留好了，先从加权L1开始
 2025年6月28日10:24:01 加权L1无效 看看maxminloss
+
+## v4.2
+2025年6月29日10:17:56 四个输出头
+还是没啥用 groups=4也没啥用 但是Tr=1有点用，能看出在努力学，但是拟合的很差，且仍是同一个模式，只不过有±差异
+![alt text](ref/c4fb4848bff8c71bc18dab7f92768ecb.jpeg)
+
+## v4.3
+2025年6月29日21:18:48 复数网络！开大招了。看看效果。
+2025年6月30日10:40:58 怎么也没啥用啊。。还是四个维度学不出差异来，难道是监督的问题？
+

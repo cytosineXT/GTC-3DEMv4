@@ -1,5 +1,13 @@
-# GTC-3DEMv3.3.py
-# 版本 3.3: 加入pinnepoch和lossfn优化，但是有bug。。。
+# GTC-3DEMv4_complexPyTorch.py
+#
+# 主要改动:
+# 1. 引入 complexPyTorch 库，这是一个现代且维护良好的复数网络库。
+# 2. 将 Decoder 中的实数层替换为 complexPyTorch.complexLayers 中的复数版本。
+# 3. 为保持参数量近似，我们将进入Decoder的`middim`个实数通道分为两半，
+#    分别作为`middim/2`个复数通道的实部和虚部。后续复数层的通道数也相应减半。
+# 4. 修改了 decode 方法，增加了实数到复数的转换逻辑，并使用复数激活函数。
+# 5. 最终输出层现在是一个复数卷积，生成两个复数通道 (E_theta, E_phi)，
+#    然后分解为四个实数通道，以保持与原有代码和GT的兼容性。
 
 from torch.nn import Module, ModuleList
 import torch 
@@ -7,13 +15,14 @@ from torch import nn
 from torch_geometric.nn.conv import SAGEConv
 import torch.nn.functional as F
 import numpy as np
-# from functools import partial
 from net.utils import derive_face_edges_from_faces, transform_to_log_coordinates, psnr, batch_mse
 from net.utils import ssim as myssim
 from net.utils_pinn import bandlimit_energy_ratio, helmholtz_consistency, helmholtz_loss_4d, bandlimit_loss_4d, WeightedFieldLoss, reciprocity_loss_fn, maxloss_4d
-# from pytorch_msssim import ms_ssim, ssim
 from einops import rearrange, pack
 from math import pi
+from complexPyTorch.complexLayers import ComplexConvTranspose2d, ComplexConv2d, ComplexBatchNorm2d
+from complexPyTorch.complexFunctions import complex_relu
+
 
 def l2norm(t):
     return F.normalize(t, dim = -1, p = 2)
@@ -55,7 +64,7 @@ def get_derived_face_featuresjxt(face_coords, in_em, device):
     edge1, edge2, *_ = (face_coords - shifted_face_coords).unbind(dim = 2)
     normals = l2norm(torch.cross(edge1, edge2, dim = -1))
     area = torch.cross(edge1, edge2, dim = -1).norm(dim = -1, keepdim = True) * 0.5
-    incident_angle_vec = polar_to_cartesian2(in_em[1],in_em[2]).float() #这里成float64了。。
+    incident_angle_vec = polar_to_cartesian2(in_em[1],in_em[2]).float()
     incident_angle_mtx = incident_angle_vec.unsqueeze(1).repeat(1, area.shape[1], 1).to(device)
     incident_freq_mtx = in_em[3].float().unsqueeze(1).unsqueeze(2).repeat(1, area.shape[1], 1).to(device)
     incident_mesh_anglehudu, _ = vector_anglejxt2(normals, incident_angle_mtx)
@@ -72,81 +81,47 @@ class MeshCodec(Module):
             attn_encoder_depth=0,
             middim=64,
             attn_dropout=0.,
-            dim_coor_embed = 64,        #坐标embedding维度
-            dim_area_embed = 16,        #面积embedding维度
-            dim_normal_embed = 64,      #法线矢量embedding维度
-            dim_angle_embed = 16,       #角度值embedding维度
-            dim_emnoangle_embed = 16,       #法线与入射夹角值embedding维度
-            dim_emangle_embed = 64,         #入射矢量embedding维度
-            dim_emfreq_embed = 16,          #频率embedding维度
+            dim_coor_embed = 64,      
+            dim_area_embed = 16,      
+            dim_normal_embed = 64,    
+            dim_angle_embed = 16,     
+            dim_emnoangle_embed = 16, 
+            dim_emangle_embed = 64,       
+            dim_emfreq_embed = 16,        
             encoder_dims_through_depth = (64, 128, 256, 256, 576),    
             ):
         super().__init__()
 
-        #---Conditioning
-        self.condfreqlayers = ModuleList([ #长度不定没关系，我可以变成固定的维度让他在长度上广播！这样的加法是加在每一根token上，而不是在特征上
-            nn.Linear(1, 64),
-            nn.Linear(1, 128), 
-            nn.Linear(1, 256), 
-            nn.Linear(1, 256),]
-        )
+        # --- Encoder (保持不变) ---
+        self.condfreqlayers = ModuleList([
+            nn.Linear(1, 64), nn.Linear(1, 128), nn.Linear(1, 256), nn.Linear(1, 256),
+        ])
         self.condanglelayers = ModuleList([
-            nn.Linear(2, 64),
-            nn.Linear(2, 128),
-            nn.Linear(2, 256),
-            nn.Linear(2, 256),]
-        )
-        self.incident_angle_linear1 = nn.Linear(2, 2250) #这样的加法是展平了加在每一个dim上，不是每一个特征上
-        self.emfreq_embed1 = nn.Linear(1, 2250)
-        self.incident_angle_linear2 = nn.Linear(2, 4050)
-        self.emfreq_embed2 = nn.Linear(1, 4050)
-
-        self.incident_angle_linear3 = nn.Linear(2, 90*180)
-        self.emfreq_embed3 = nn.Linear(1, 90*180)
-        self.incident_angle_linear4 = nn.Linear(2, 180*360)
-        self.emfreq_embed4 = nn.Linear(1, 180*360)
-        self.incident_angle_linear5 = nn.Linear(2, 360*720)
-        self.emfreq_embed5 = nn.Linear(1, 360*720)
-
-        #---Encoder
+            nn.Linear(2, 64), nn.Linear(2, 128), nn.Linear(2, 256), nn.Linear(2, 256),
+        ])
         self.angle_embed = nn.Linear(3, 3*dim_angle_embed)
         self.area_embed = nn.Linear(1, dim_area_embed)
         self.normal_embed = nn.Linear(3, 3*dim_normal_embed)
-        self.emnoangle_embed = nn.Linear(1, dim_emnoangle_embed) #jxt
-        self.emangle_embed = nn.Linear(3, 3*dim_emangle_embed) #jxt
-        self.emfreq_embed = nn.Linear(1, dim_emfreq_embed) #jxt
+        self.emnoangle_embed = nn.Linear(1, dim_emnoangle_embed)
+        self.emangle_embed = nn.Linear(3, 3*dim_emangle_embed)
+        self.emfreq_embed = nn.Linear(1, dim_emfreq_embed)
         self.coor_embed = nn.Linear(9, 9*dim_coor_embed) 
-
 
         init_dim = dim_coor_embed * (3 * 3) + dim_angle_embed * 3 + dim_normal_embed * 3 + dim_area_embed + dim_emangle_embed * 3 + dim_emnoangle_embed + dim_emfreq_embed
 
-        sageconv_kwargs = dict(   #SAGEconv参数
-            normalize = True,
-            project = True
-        )
-        # sageconv_kwargs = {**sageconv_kwargs }
-        init_encoder_dim, *encoder_dims_through_depth = encoder_dims_through_depth #64, 128, 256, 256, 576
+        sageconv_kwargs = dict(normalize = True, project = True)
+        init_encoder_dim, *encoder_dims_through_depth = encoder_dims_through_depth
         curr_dim = init_encoder_dim
 
         self.init_sage_conv = SAGEConv(init_dim, init_encoder_dim, **sageconv_kwargs)
-        self.init_encoder_act_and_norm = nn.Sequential(
-            nn.SiLU(),
-            nn.LayerNorm(init_encoder_dim)
-        ) 
+        self.init_encoder_act_and_norm = nn.Sequential(nn.SiLU(), nn.LayerNorm(init_encoder_dim)) 
+        
         self.encoders = ModuleList([])
-        self.encoder_act_and_norm = ModuleList([])  # 新增的激活和归一化层列表
+        self.encoder_act_and_norm = ModuleList([])
 
         for dim_layer in encoder_dims_through_depth:
-            sage_conv = SAGEConv(
-                curr_dim,
-                dim_layer,
-                **sageconv_kwargs
-            )
-            self.encoders.append(sage_conv)
-            self.encoder_act_and_norm.append(nn.Sequential(
-                nn.SiLU(),
-                nn.LayerNorm(dim_layer)
-            ))
+            self.encoders.append(SAGEConv(curr_dim, dim_layer, **sageconv_kwargs))
+            self.encoder_act_and_norm.append(nn.Sequential(nn.SiLU(), nn.LayerNorm(dim_layer)))
             curr_dim = dim_layer
 
         self.encoder_attn_blocks = nn.ModuleList([
@@ -154,101 +129,74 @@ class MeshCodec(Module):
             for _ in range(attn_encoder_depth)
         ])
 
-        #---Adaptation Module
+        #--- Adaptation Module (保持不变) ---
         self.conv1d1 = nn.Conv1d(576, middim, kernel_size=10, stride=10, dilation=1 ,padding=0)
         self.fc1d1 = nn.Linear(2250, 45*90)
 
+        # --- Complex Decoder (重大修改 - 使用 complexPyTorch) ---
+        # 假设 middim 是偶数。
+        # 我们将把 adaptation module 输出的 middim 个实数通道分成两半，
+        # 分别作为 middim/2 个复数通道的实部和虚部。
+        assert middim % 2 == 0, "middim 必须是偶数才能转换为复数通道"
+        complex_in_channels = middim // 2
 
-        #---Decoder
-        # Decoder3
-        self.upconv1 = nn.ConvTranspose2d(middim, int(middim/2), kernel_size=2, stride=2, groups=4)
-        self.bn1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
-        self.conv1_1 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
-        self.conv1_2 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层2
-        self.bn1_1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
-        self.bn1_2 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层2
-        self.upconv2 = nn.ConvTranspose2d(int(middim/2), int(middim/4), kernel_size=2, stride=2, groups=4)
-        self.bn2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
-        self.conv2_1 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
-        self.conv2_2 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层2
-        self.bn2_1 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
-        self.bn2_2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层2
-        self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2, groups=4)
-        # self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2, output_padding=1)
-        self.bn3 = nn.BatchNorm2d(int(middim/8))
-        self.conv3_1 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
-        self.conv3_2 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1, groups=4)  # 添加的卷积层1
-        self.bn3_1 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层1
-        self.bn3_2 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层2
-        # self.conv1x1 = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        # self.conv1x1 = nn.Conv2d(int(middim/8), 4, kernel_size=1, stride=1, padding=0) #在这里运行复电场预测 四维就行
-        self.head_re_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        self.head_im_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        self.head_re_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        self.head_im_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        # 第一次上采样
+        # 原: (middim, middim/2) -> 新(复数): (middim/2, middim/4)
+        self.upconv1_complex = ComplexConvTranspose2d(complex_in_channels, complex_in_channels // 2, kernel_size=2, stride=2)
+        self.bn1_complex = ComplexBatchNorm2d(complex_in_channels // 2)
+        self.conv1_1_complex = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
+        self.bn1_1_complex = ComplexBatchNorm2d(complex_in_channels // 2)
+        self.conv1_2_complex = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
+        self.bn1_2_complex = ComplexBatchNorm2d(complex_in_channels // 2)
 
-        # self.upconv1 = nn.ConvTranspose2d(middim, int(middim/2), kernel_size=2, stride=2)
-        # self.bn1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
-        # self.conv1_1 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
-        # self.conv1_2 = nn.Conv2d(int(middim/2), int(middim/2), kernel_size=3, stride=1, padding=1)  # 添加的卷积层2
-        # self.bn1_1 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层1
-        # self.bn1_2 = nn.BatchNorm2d(int(middim/2))  # 添加的批量归一化层2
-        # self.upconv2 = nn.ConvTranspose2d(int(middim/2), int(middim/4), kernel_size=2, stride=2)
-        # self.bn2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
-        # self.conv2_1 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
-        # self.conv2_2 = nn.Conv2d(int(middim/4), int(middim/4), kernel_size=3, stride=1, padding=1)  # 添加的卷积层2
-        # self.bn2_1 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层1
-        # self.bn2_2 = nn.BatchNorm2d(int(middim/4))  # 添加的批量归一化层2
-        # self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2)
-        # # self.upconv3 = nn.ConvTranspose2d(int(middim/4), int(middim/8), kernel_size=2, stride=2, output_padding=1)
-        # self.bn3 = nn.BatchNorm2d(int(middim/8))
-        # self.conv3_1 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
-        # self.conv3_2 = nn.Conv2d(int(middim/8), int(middim/8), kernel_size=3, stride=1, padding=1)  # 添加的卷积层1
-        # self.bn3_1 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层1
-        # self.bn3_2 = nn.BatchNorm2d(int(middim/8))  # 添加的批量归一化层2
-        # # self.conv1x1 = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        # # self.conv1x1 = nn.Conv2d(int(middim/8), 4, kernel_size=1, stride=1, padding=0) #在这里运行复电场预测 四维就行
-        # self.head_re_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        # self.head_im_etheta = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        # self.head_re_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
-        # self.head_im_ephi = nn.Conv2d(int(middim/8), 1, kernel_size=1, stride=1, padding=0)
+        # 第二次上采样
+        # 原: (middim/2, middim/4) -> 新(复数): (middim/4, middim/8)
+        self.upconv2_complex = ComplexConvTranspose2d(complex_in_channels // 2, complex_in_channels // 4, kernel_size=2, stride=2)
+        self.bn2_complex = ComplexBatchNorm2d(complex_in_channels // 4)
+        self.conv2_1_complex = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
+        self.bn2_1_complex = ComplexBatchNorm2d(complex_in_channels // 4)
+        self.conv2_2_complex = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
+        self.bn2_2_complex = ComplexBatchNorm2d(complex_in_channels // 4)
+        
+        # 第三次上采样
+        # 原: (middim/4, middim/8) -> 新(复数): (middim/8, middim/16)
+        self.upconv3_complex = ComplexConvTranspose2d(complex_in_channels // 4, complex_in_channels // 8, kernel_size=2, stride=2)
+        self.bn3_complex = ComplexBatchNorm2d(complex_in_channels // 8)
+        self.conv3_1_complex = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
+        self.bn3_1_complex = ComplexBatchNorm2d(complex_in_channels // 8)
+        self.conv3_2_complex = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
+        self.bn3_2_complex = ComplexBatchNorm2d(complex_in_channels // 8)
+        
+        # 最终输出头：输出2个复数通道 (E_theta, E_phi)
+        # 原: (middim/8) -> 4 (real) -> 新(复数): (middim/16) -> 2 (complex)
+        self.head_complex = ComplexConv2d(complex_in_channels // 8, 2, kernel_size=1, stride=1, padding=0)
 
         
-    def encode(
-        self,
-        *,
-        vertices,
-        faces,
-        face_edges,
-        in_em
-        ):
-        device =vertices.device 
+    def encode(self, *, vertices, faces, face_edges, in_em):
+        device = vertices.device 
         face_coords = jxtget_face_coords(vertices, faces) 
-        in_em[3]=transform_to_log_coordinates(in_em[3]) #频率转换为对数坐标 加在encoder里！
-        in_em = [in_em[0], in_em[1].float(), in_em[2].float(), in_em[3].float()] #将角度和频率转换为float32
-        derived_features = get_derived_face_featuresjxt(face_coords, in_em, device) #这一步用了2s
+        in_em[3] = transform_to_log_coordinates(in_em[3])
+        in_em = [in_em[0], in_em[1].float(), in_em[2].float(), in_em[3].float()]
+        derived_features = get_derived_face_featuresjxt(face_coords, in_em, device)
 
-        
         angle_embed = self.angle_embed(derived_features['angles'])
         area_embed = self.area_embed(derived_features['area'])
-        normal_embed = self.normal_embed(derived_features['normals'])#这里都是float32
-
-        emnoangle_embed = self.emnoangle_embed(derived_features['emnoangle']) #jxt 这个怎么变成float64了
-        emangle_embed = self.emangle_embed(derived_features['emangle']) #jxt torch.Size([2, 20804, 3])
+        normal_embed = self.normal_embed(derived_features['normals'])
+        emnoangle_embed = self.emnoangle_embed(derived_features['emnoangle'])
+        emangle_embed = self.emangle_embed(derived_features['emangle'])
         emfreq_embed = self.emfreq_embed(derived_features['emfreq'])
-        face_coords = rearrange(face_coords, 'b nf nv c -> b nf (nv c)') # 9 or 12 coordinates per face #重新排布
-        face_coor_embed = self.coor_embed(face_coords) #在这里把face做成embedding
-
+        face_coords = rearrange(face_coords, 'b nf nv c -> b nf (nv c)')
+        face_coor_embed = self.coor_embed(face_coords)
 
         face_embed, _ = pack([face_coor_embed, angle_embed, area_embed, normal_embed, emnoangle_embed, emangle_embed, emfreq_embed], 'b nf *') 
 
-
         face_edges = face_edges.reshape(2, -1).to(device)
-        orig_face_embed_shape = face_embed.shape[:2]#本来就记下了分批了
-        face_embed = face_embed.reshape(-1, face_embed.shape[-1])#torch.Size([129960, 192])
-        face_embed = self.init_sage_conv(face_embed, face_edges)#torch.Size([129960, 64])
-        face_embed = self.init_encoder_act_and_norm(face_embed)#torch.Size([129960, 64])
-        face_embed = face_embed.reshape(orig_face_embed_shape[0], orig_face_embed_shape[1], -1)#回复分批
+        orig_face_embed_shape = face_embed.shape[:2]
+        face_embed = face_embed.reshape(-1, face_embed.shape[-1])
+        
+        face_embed = self.init_sage_conv(face_embed, face_edges)
+        face_embed = self.init_encoder_act_and_norm(face_embed)
+        face_embed = face_embed.reshape(orig_face_embed_shape[0], orig_face_embed_shape[1], -1)
 
         in_angle = torch.stack([in_em[1]/180, in_em[2]/360]).t().float().unsqueeze(1).to(device)
         in_freq = in_em[3].float().unsqueeze(1).unsqueeze(1).to(device)
@@ -256,133 +204,101 @@ class MeshCodec(Module):
         for i, (conv, act_norm) in enumerate(zip(self.encoders, self.encoder_act_and_norm)):
             condfreq = self.condfreqlayers[i](in_freq)
             condangle = self.condanglelayers[i](in_angle)
-            face_embed = face_embed + condangle + condfreq  # 自带广播操作
-            face_embed = face_embed.reshape(-1, face_embed.shape[-1])  # 再次合并批次
-            face_embed = conv(face_embed, face_edges)  # 图卷积操作
-            face_embed = act_norm(face_embed)  # 应用激活函数和LayerNorm
-            face_embed = face_embed.reshape(orig_face_embed_shape[0], orig_face_embed_shape[1], -1)  # 重新分割批次
+            face_embed = face_embed + condangle + condfreq
+            face_embed = face_embed.reshape(-1, face_embed.shape[-1])
+            face_embed = conv(face_embed, face_edges)
+            face_embed = act_norm(face_embed)
+            face_embed = face_embed.reshape(orig_face_embed_shape[0], orig_face_embed_shape[1], -1)
           
         for attn_layer in self.encoder_attn_blocks:
-            face_embed = face_embed.permute(1, 0, 2)  # (nf, b, d) torch.Size([10, 12996, 576])
-            face_embed = attn_layer(face_embed) + face_embed  # (nf, b, d) torch.Size([12996, 10, 576]) 残差骚操作
-            # face_embed = attn_layer(face_embed)  # (nf, b, d) torch.Size([12996, 10, 576]) 无残差
-            face_embed = face_embed.permute(1, 0, 2)  # (b, nf, d)
+            face_embed = face_embed.permute(1, 0, 2)
+            face_embed = attn_layer(face_embed) + face_embed
+            face_embed = face_embed.permute(1, 0, 2)
 
         return face_embed, in_angle, in_freq
     
-    def decode( 
-        self,
-        x, 
-        in_angle,
-        in_freq,
-        device,
-    ):
-        
-        condangle1 = self.incident_angle_linear1(in_angle)
-        condangle2 = self.incident_angle_linear2(in_angle)
-        condangle3 = self.incident_angle_linear3(in_angle).reshape(in_angle.shape[0],-1,90,180)#这样的加法是展平了加在每一个dim上，不是每一根特征上
-        condangle4 = self.incident_angle_linear4(in_angle).reshape(in_angle.shape[0],-1,180,360)
-        condangle5 = self.incident_angle_linear5(in_angle).reshape(in_angle.shape[0],-1,360,720)
-
-        condfreq1 = self.emfreq_embed1(in_freq)
-        condfreq2 = self.emfreq_embed2(in_freq)
-        condfreq3 = self.emfreq_embed3(in_freq).reshape(in_angle.shape[0],-1,90,180)
-        condfreq4 = self.emfreq_embed4(in_freq).reshape(in_angle.shape[0],-1,180,360)
-        condfreq5 = self.emfreq_embed5(in_freq).reshape(in_angle.shape[0],-1,360,720)
-
-        pad_size = 22500 - x.size(1) #在这里完成了padding。。。前面变长无所谓。。。
+    def decode(self, x, in_angle, in_freq, device):
+        # Adaptation Module (保持不变)
+        pad_size = 22500 - x.size(1)
         x = F.pad(x, (0, 0, 0, pad_size)) 
         x = x.view(x.size(0), -1, 22500) 
         
-        # # ------------------------1D Conv+FC-----------------------------
-        # torch.Size([10, 784, 22500])
         x = self.conv1d1(x) 
-        x = F.relu(x) #非线性变换
-        # torch.Size([10, 64(middim), 2250])
-        # x = x + condangle1 
-        # x = x + condfreq1
-
+        x = F.relu(x)
 
         x = self.fc1d1(x)
         x = x.reshape(x.size(0), -1, 45*90) 
-        # torch.Size([10, 64, 4050])
-        # x = x + condangle2 
-        # x = x + condfreq2
         x = x.reshape(x.size(0), -1, 45, 90) 
-        # torch.Size([10, 64, 45, 90])
+        
+        # --- Complex Decoder Forward Pass ---
+        # x 的 shape: [batch, middim, 45, 90]
+        # 将实数张量 x 转换为复数张量
+        # 前一半通道作为实部，后一半通道作为虚部
+        middim_half = x.shape[1] // 2
+        x_re = x[:, :middim_half, :, :]
+        x_im = x[:, middim_half:, :, :]
+        x_complex = torch.complex(x_re, x_im)
 
-        # ------------------------2D upConv------------------------------
-        x = self.upconv1(x)
-        # torch.Size([10, 32, 90, 180])
-        x = self.bn1(x)
-        x = F.relu(x)
-        # x = x + condangle3
-        # x = x + condfreq3
-        x = self.conv1_1(x)
-        x = self.bn1_1(x)
-        x = F.relu(x)
-        # x = x + condangle3
-        # x = x + condfreq3
-        x = self.conv1_2(x)
-        x = self.bn1_2(x)
-        x = F.relu(x)
-        # x = x + condangle3
-        # x = x + condfreq3
+        # 第一次上采样
+        x_complex = self.upconv1_complex(x_complex)
+        x_complex = self.bn1_complex(x_complex)
+        x_complex = complex_relu(x_complex)
+        
+        x_complex = self.conv1_1_complex(x_complex)
+        x_complex = self.bn1_1_complex(x_complex)
+        x_complex = complex_relu(x_complex)
+        
+        x_complex = self.conv1_2_complex(x_complex)
+        x_complex = self.bn1_2_complex(x_complex)
+        x_complex = complex_relu(x_complex)
+        
+        # 第二次上采样
+        x_complex = self.upconv2_complex(x_complex)
+        x_complex = self.bn2_complex(x_complex)
+        x_complex = complex_relu(x_complex)
+        
+        x_complex = self.conv2_1_complex(x_complex)
+        x_complex = self.bn2_1_complex(x_complex)
+        x_complex = complex_relu(x_complex)
+        
+        x_complex = self.conv2_2_complex(x_complex)
+        x_complex = self.bn2_2_complex(x_complex)
+        x_complex = complex_relu(x_complex)
+        
+        # 第三次上采样
+        x_complex = self.upconv3_complex(x_complex)
+        x_complex = self.bn3_complex(x_complex)
+        x_complex = complex_relu(x_complex)
+        
+        x_complex = self.conv3_1_complex(x_complex)
+        x_complex = self.bn3_1_complex(x_complex)
+        x_complex = complex_relu(x_complex)
 
-        x = self.upconv2(x) 
-        #torch.Size([10, 16, 180, 360])
-        x = self.bn2(x)
-        x = F.relu(x)
-        # x = x + condangle4
-        # x = x + condfreq4
-        x = self.conv2_1(x)
-        x = self.bn2_1(x)
-        x = F.relu(x)
-        # x = x + condangle4
-        # x = x + condfreq4
-        x = self.conv2_2(x)
-        x = self.bn2_2(x)
-        x = F.relu(x)
-        # x = x + condangle4
-        # x = x + condfreq4
+        x_complex = self.conv3_2_complex(x_complex)
+        x_complex = self.bn3_2_complex(x_complex)
+        x_complex = complex_relu(x_complex)
 
-        x = self.upconv3(x) 
-        #torch.Size([10, 8, 360, 720])
-        x = self.bn3(x)
-        x = F.relu(x)
-        # x = x + condangle5
-        # x = x + condfreq5
-        x = self.conv3_1(x)
-        x = self.bn3_1(x)
-        x = F.relu(x)
-        # x = x + condangle5
-        # x = x + condfreq5
-        x = self.conv3_2(x)
-        x = self.bn3_2(x)
-        x = F.relu(x)
-        # x = x + condangle5
-        # x = x + condfreq5
+        # 最终输出头
+        # output_complex 的 shape: [batch, 2, H, W], dtype=torch.complex64
+        # 通道0: E_theta (复数), 通道1: E_phi (复数)
+        output_complex = self.head_complex(x_complex)
 
-        # x = self.conv1x1(x)
-        # torch.Size([10, 1, 360, 720])
-        out_re_etheta = self.head_re_etheta(x)
-        out_im_etheta = self.head_im_etheta(x)
-        out_re_ephi = self.head_re_ephi(x)
-        out_im_ephi = self.head_im_ephi(x)
+        # 将复数输出分解为 4 个实数通道以匹配 GT 格式
+        e_theta = output_complex[:, 0:1, :, :]
+        e_phi   = output_complex[:, 1:2, :, :]
 
+        out_re_etheta = e_theta.real
+        out_im_etheta = e_theta.imag
+        out_re_ephi   = e_phi.real
+        out_im_ephi   = e_phi.imag
+        
         return torch.cat([out_re_etheta, out_im_etheta, out_re_ephi, out_im_ephi], dim=1)
-        # return x
-        # return x.permute(0, 2, 3, 1)  # (b, h, w, c) -> (b, c, h, w)
+    
 
     def forward(self, *, vertices, faces, face_edges=None, in_em, GT=None, logger=None, device='cpu', loss_type='L1', **kwargs):
-        # =========================================================================
-        #               Part 5: forward() 方法重大升级
-        # =========================================================================
         original_in_em = [in_em[0], in_em[1].clone(), in_em[2].clone(), in_em[3].clone()]
         original_freqs_ghz = in_em[3].clone()
 
-
-        # 1. 初始化损失函数和权重
         loss_fn = WeightedFieldLoss(
             lambda_main=kwargs.get('lambda_main', 10.0), 
             loss_type=loss_type,
@@ -406,59 +322,36 @@ class MeshCodec(Module):
         if GT is None:
             return decoded
         
-        # 3. 如果是训练或验证，计算所有loss和指标
         else:
-            if GT.shape[2:4] == (361, 720):
+            if GT.dim() > 1 and GT.shape[2:4] == (361, 720):
                 GT = GT[:, :, :-1, :]
             
-            # # --- 核心Loss计算 ---
-            # 1. mainloss, weighted 
             mainloss = loss_fn(decoded, GT)
             total_loss = mainloss.clone()
-            # 1. mainloss
-            # if loss_type == 'L1':
-            #     mainloss = F.l1_loss(decoded, GT)
-            # elif loss_type == 'mse':
-            #     mainloss = F.mse_loss(decoded, GT)
-            # else: # 默认为L1
-            #     mainloss = F.l1_loss(decoded, GT)
-            # total_loss = mainloss.clone()
-
-            # # 3.2 PINN 物理损失 (仅在pinnepoch之后激活)
+            
             maxloss, helmholtz_loss, bandlimit_loss, reciprocity_loss, kk_loss, freq_smooth_loss = 0.,0.,0.,0.,0.,0.
 
-            # 2. maxloss
             if lambda_max > 0:
                 maxloss = maxloss_4d(decoded, GT)
                 total_loss += lambda_max * maxloss
 
             if (pinnepoch >= 0 and epochnow > pinnepoch) or pinnepoch < 0 :
-                # 计算k0
                 c = 299792458.0
                 freqs_hz = original_freqs_ghz * 1e9
                 k0 = (2 * pi * freqs_hz / c).view(-1, 1, 1, 1).to(device)
 
-                # 计算亥姆霍兹损失
                 if lambda_helmholtz > 0:
                     helmholtz_loss = helmholtz_loss_4d(decoded, k0)
                     total_loss += lambda_helmholtz * helmholtz_loss
 
-                # 计算带限损失
                 if lambda_bandlimit > 0:
                     bandlimit_loss = bandlimit_loss_4d(decoded, k0)
                     total_loss += lambda_bandlimit * bandlimit_loss
 
-                # 5. reciprocity_loss
                 if lambda_reciprocity > 0:
                     reciprocity_loss = reciprocity_loss_fn(self, decoded, vertices, faces, face_edges, original_in_em, device)
                     total_loss += lambda_reciprocity * reciprocity_loss
                 
-                # 6.计算Kramers-Kronig一致性损失（如果需要）
-                # if lambda_kramers_kronig > 0:
-                #     kk_loss = kramers_kronig_consistency(decoded)
-                
-
-            # --- 性能指标计算 ---
             helm_metric, band_metric, reciprocity_metric, kk_metric, freq_smooth_metric = 0.,0.,0.,0.,0.
             with torch.no_grad():
                 psnr_list = psnr(decoded, GT)
@@ -513,95 +406,3 @@ class MeshCodec(Module):
             }
 
             return decoded, metrics
-            # return total_loss, decoded, mean_psnr, psnr_list, mean_ssim, ssim_list, mse, nmse, rmse, l1, percentage_error, mse_list, metrics
-        
-    # def forward(self, *, vertices, faces, face_edges=None, in_em, GT=None, logger=None, device='cpu', loss_type='L1', **kwargs):
-    #     # 更新物理损失的权重
-        
-    #     epochnow = kwargs.get('epochnow', 0)
-    #     pinnepoch = kwargs.get('pinnepoch', 0)
-    #     lambda_max = kwargs.get('lambda_max', 0.0001)
-    #     lambda_helmholtz = kwargs.get('lambda_helmholtz', 0)
-    #     lambda_bandlimit = kwargs.get('lambda_bandlimit', 0)
-    #     lambda_reciprocity = kwargs.get('lambda_reciprocity', 0) # (新增)
-        
-        
-    #     # 保存原始输入，以供互易性损失计算使用
-    #     original_in_em = [in_em[0], in_em[1].clone(), in_em[2].clone(), in_em[3].clone()]
-        
-    #     if face_edges is None:
-    #         face_edges = derive_face_edges_from_faces(faces, pad_id=-1)
-
-    #     encoded, in_angle, in_freq = self.encode(
-    #         vertices=vertices, faces=faces, face_edges=face_edges, in_em=in_em)
-
-    #     decoded = self.decode(encoded, in_angle, in_freq, device)
-
-    #     if GT is None:
-    #         return decoded
-    #     else:
-    #         if GT.shape[2:4] == (361, 720):
-    #             GT = GT[:, :, :-1, :]
-            
-    #         mainloss = 0.
-    #         maxloss = 0.
-    #         helmholtz_loss = 0.
-    #         bandlimit_loss = 0.
-    #         reciprocity_loss = 0.
-
-    #         #-----------------------------------------------loss计算----------------------------------------------
-    #         # 1. mainloss
-    #         if loss_type == 'L1':
-    #             mainloss = F.l1_loss(decoded, GT)
-    #         elif loss_type == 'mse':
-    #             mainloss = F.mse_loss(decoded, GT)
-    #         else: # 默认为L1
-    #             mainloss = F.l1_loss(decoded, GT)
-    #         total_loss = mainloss.clone()
-
-    #         # 2. maxloss
-    #         if lambda_max > 0:
-    #             maxloss = torch.mean(torch.abs(torch.amax(decoded, dim=(1, 2)) - torch.amax(GT, dim=(1, 2))))
-    #             total_loss += lambda_max * maxloss
-
-    #         if (pinnepoch >= 0 and epochnow > pinnepoch) or pinnepoch < 0 :#若有pinnepoch>=0，则仅当当前轮数大于pinnepoch时计算pinnloss；如果pinnloss=-1则从头开始
-    #             # 3. helmholtz_loss
-    #             if lambda_helmholtz > 0:
-    #                 helmholtz_loss = calculate_helmholtz_loss(decoded, original_in_em[3], device)
-    #                 total_loss += lambda_helmholtz * helmholtz_loss
-
-    #             # 4. bandlimit_loss
-    #             if lambda_bandlimit > 0:
-    #                 bandlimit_loss = calculate_bandlimit_loss(decoded, original_in_em[3], device)
-    #                 total_loss += lambda_bandlimit * bandlimit_loss
-
-    #             # 5. reciprocity_loss
-    #             if lambda_reciprocity > 0:
-    #                 reciprocity_loss = reciprocity_loss_fn(self, decoded, vertices, faces, face_edges, original_in_em, device)
-    #                 total_loss += lambda_reciprocity * reciprocity_loss
-    #         #-----------------------------------------------loss计算----------------------------------------------
-            
-
-    #         with torch.no_grad():
-    #             psnr_list = psnr(decoded, GT)
-    #             ssim_list = myssim(decoded, GT)
-    #             mse_list = batch_mse(decoded, GT)
-    #             mean_psnr = psnr_list.mean()
-    #             mean_ssim = ssim_list.mean()
-    #             minus = decoded - GT
-    #             mse = ((minus) ** 2).mean()
-    #             nmse = mse / torch.var(GT)
-    #             rmse = torch.sqrt(mse)
-    #             l1 = (decoded-GT).abs().mean()
-    #             percentage_error = (minus / (GT + 1e-4)).abs().mean() * 100
-
-    #         metrics = {
-    #             'total_loss': total_loss,
-    #             'main_loss': mainloss,
-    #             'max_loss': maxloss,
-    #             'helmholtz_loss': helmholtz_loss,
-    #             'bandlimit_loss': bandlimit_loss,
-    #             'reciprocity_loss': reciprocity_loss,
-    #         }
-
-    #         return total_loss, decoded, mean_psnr, psnr_list, mean_ssim, ssim_list, mse, nmse, rmse, l1, percentage_error, mse_list, metrics
