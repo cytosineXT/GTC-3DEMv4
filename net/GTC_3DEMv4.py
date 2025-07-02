@@ -15,7 +15,7 @@ import torch
 from torch import nn
 from torch_geometric.nn.conv import SAGEConv
 import torch.nn.functional as F
-import numpy as np
+# import numpy as np
 from net.utils import derive_face_edges_from_faces, transform_to_log_coordinates, psnr, batch_mse
 from net.utils import ssim as myssim
 from net.utils_pinn import bandlimit_energy_ratio, helmholtz_consistency, helmholtz_loss_4d, bandlimit_loss_4d, WeightedFieldLoss, reciprocity_loss_fn, maxloss_4d

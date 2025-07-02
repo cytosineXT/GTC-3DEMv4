@@ -414,10 +414,16 @@ for i in range(epoch):
     freq_smooths.append(epoch_metrics_frequency_smoothness)
 
     mainLosses.append(epoch_main_loss)
-    maxLosses.append(epoch_max_loss)
-    helmholtzLosses.append(epoch_helmholtz_loss)
-    bandlimitLosses.append(epoch_bandlimit_loss)
-    reciprocityLosses.append(epoch_reciprocity_loss)
+    maxLosses.append(epoch_max_loss*lambda_max)
+    helmholtzLosses.append(epoch_helmholtz_loss*lambda_helmholtz)
+    bandlimitLosses.append(epoch_bandlimit_loss*lambda_bandlimit)
+    reciprocityLosses.append(epoch_reciprocity_loss*lambda_reciprocity)
+    # mainLosses.append(epoch_main_loss)
+    # maxLosses.append(epoch_max_loss)
+    # helmholtzLosses.append(epoch_helmholtz_loss)
+    # bandlimitLosses.append(epoch_bandlimit_loss)
+    # reciprocityLosses.append(epoch_reciprocity_loss)
+
 
     logger.info('用于绘图的epoch metrics 计算完成')
 
