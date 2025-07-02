@@ -6,8 +6,9 @@
 # 3. 为保持参数量近似，我们将进入Decoder的`middim`个实数通道分为两半，
 #    分别作为`middim/2`个复数通道的实部和虚部。后续复数层的通道数也相应减半。
 # 4. 修改了 decode 方法，增加了实数到复数的转换逻辑，并使用复数激活函数。
-# 5. 最终输出层现在是一个复数卷积，生成两个复数通道 (E_theta, E_phi)，
-#    然后分解为四个实数通道，以保持与原有代码和GT的兼容性。
+# 5. (v4.3) 将原有的单解码器结构修改为两个独立的、不共享权重的解码器头。
+#    一个头专门用于预测 E_theta 复数场，另一个专门用于预测 E_phi 复数场。
+# 6. 最终将两个解码器头的复数输出分解为四个实数通道，以保持与原有代码和GT的兼容性。
 
 from torch.nn import Module, ModuleList
 import torch 
@@ -133,43 +134,59 @@ class MeshCodec(Module):
         self.conv1d1 = nn.Conv1d(576, middim, kernel_size=10, stride=10, dilation=1 ,padding=0)
         self.fc1d1 = nn.Linear(2250, 45*90)
 
-        # --- Complex Decoder (重大修改 - 使用 complexPyTorch) ---
-        # 假设 middim 是偶数。
-        # 我们将把 adaptation module 输出的 middim 个实数通道分成两半，
-        # 分别作为 middim/2 个复数通道的实部和虚部。
+        # --- Complex Decoder (重大修改 - 两个独立的复数解码器头) ---
         assert middim % 2 == 0, "middim 必须是偶数才能转换为复数通道"
         complex_in_channels = middim // 2
-
+        
+        # --- Decoder for E_theta ---
         # 第一次上采样
-        # 原: (middim, middim/2) -> 新(复数): (middim/2, middim/4)
-        self.upconv1_complex = ComplexConvTranspose2d(complex_in_channels, complex_in_channels // 2, kernel_size=2, stride=2)
-        self.bn1_complex = ComplexBatchNorm2d(complex_in_channels // 2)
-        self.conv1_1_complex = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
-        self.bn1_1_complex = ComplexBatchNorm2d(complex_in_channels // 2)
-        self.conv1_2_complex = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
-        self.bn1_2_complex = ComplexBatchNorm2d(complex_in_channels // 2)
-
+        self.upconv1_complex_theta = ComplexConvTranspose2d(complex_in_channels, complex_in_channels // 2, kernel_size=2, stride=2)
+        self.bn1_complex_theta = ComplexBatchNorm2d(complex_in_channels // 2)
+        self.conv1_1_complex_theta = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
+        self.bn1_1_complex_theta = ComplexBatchNorm2d(complex_in_channels // 2)
+        self.conv1_2_complex_theta = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
+        self.bn1_2_complex_theta = ComplexBatchNorm2d(complex_in_channels // 2)
         # 第二次上采样
-        # 原: (middim/2, middim/4) -> 新(复数): (middim/4, middim/8)
-        self.upconv2_complex = ComplexConvTranspose2d(complex_in_channels // 2, complex_in_channels // 4, kernel_size=2, stride=2)
-        self.bn2_complex = ComplexBatchNorm2d(complex_in_channels // 4)
-        self.conv2_1_complex = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
-        self.bn2_1_complex = ComplexBatchNorm2d(complex_in_channels // 4)
-        self.conv2_2_complex = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
-        self.bn2_2_complex = ComplexBatchNorm2d(complex_in_channels // 4)
-        
+        self.upconv2_complex_theta = ComplexConvTranspose2d(complex_in_channels // 2, complex_in_channels // 4, kernel_size=2, stride=2)
+        self.bn2_complex_theta = ComplexBatchNorm2d(complex_in_channels // 4)
+        self.conv2_1_complex_theta = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
+        self.bn2_1_complex_theta = ComplexBatchNorm2d(complex_in_channels // 4)
+        self.conv2_2_complex_theta = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
+        self.bn2_2_complex_theta = ComplexBatchNorm2d(complex_in_channels // 4)
         # 第三次上采样
-        # 原: (middim/4, middim/8) -> 新(复数): (middim/8, middim/16)
-        self.upconv3_complex = ComplexConvTranspose2d(complex_in_channels // 4, complex_in_channels // 8, kernel_size=2, stride=2)
-        self.bn3_complex = ComplexBatchNorm2d(complex_in_channels // 8)
-        self.conv3_1_complex = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
-        self.bn3_1_complex = ComplexBatchNorm2d(complex_in_channels // 8)
-        self.conv3_2_complex = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
-        self.bn3_2_complex = ComplexBatchNorm2d(complex_in_channels // 8)
-        
-        # 最终输出头：输出2个复数通道 (E_theta, E_phi)
-        # 原: (middim/8) -> 4 (real) -> 新(复数): (middim/16) -> 2 (complex)
-        self.head_complex = ComplexConv2d(complex_in_channels // 8, 2, kernel_size=1, stride=1, padding=0)
+        self.upconv3_complex_theta = ComplexConvTranspose2d(complex_in_channels // 4, complex_in_channels // 8, kernel_size=2, stride=2)
+        self.bn3_complex_theta = ComplexBatchNorm2d(complex_in_channels // 8)
+        self.conv3_1_complex_theta = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
+        self.bn3_1_complex_theta = ComplexBatchNorm2d(complex_in_channels // 8)
+        self.conv3_2_complex_theta = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
+        self.bn3_2_complex_theta = ComplexBatchNorm2d(complex_in_channels // 8)
+        # E_theta 输出头
+        self.head_complex_theta = ComplexConv2d(complex_in_channels // 8, 1, kernel_size=1, stride=1, padding=0)
+
+        # --- Decoder for E_phi ---
+        # 第一次上采样
+        self.upconv1_complex_phi = ComplexConvTranspose2d(complex_in_channels, complex_in_channels // 2, kernel_size=2, stride=2)
+        self.bn1_complex_phi = ComplexBatchNorm2d(complex_in_channels // 2)
+        self.conv1_1_complex_phi = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
+        self.bn1_1_complex_phi = ComplexBatchNorm2d(complex_in_channels // 2)
+        self.conv1_2_complex_phi = ComplexConv2d(complex_in_channels // 2, complex_in_channels // 2, kernel_size=3, stride=1, padding=1)
+        self.bn1_2_complex_phi = ComplexBatchNorm2d(complex_in_channels // 2)
+        # 第二次上采样
+        self.upconv2_complex_phi = ComplexConvTranspose2d(complex_in_channels // 2, complex_in_channels // 4, kernel_size=2, stride=2)
+        self.bn2_complex_phi = ComplexBatchNorm2d(complex_in_channels // 4)
+        self.conv2_1_complex_phi = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
+        self.bn2_1_complex_phi = ComplexBatchNorm2d(complex_in_channels // 4)
+        self.conv2_2_complex_phi = ComplexConv2d(complex_in_channels // 4, complex_in_channels // 4, kernel_size=3, stride=1, padding=1)
+        self.bn2_2_complex_phi = ComplexBatchNorm2d(complex_in_channels // 4)
+        # 第三次上采样
+        self.upconv3_complex_phi = ComplexConvTranspose2d(complex_in_channels // 4, complex_in_channels // 8, kernel_size=2, stride=2)
+        self.bn3_complex_phi = ComplexBatchNorm2d(complex_in_channels // 8)
+        self.conv3_1_complex_phi = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
+        self.bn3_1_complex_phi = ComplexBatchNorm2d(complex_in_channels // 8)
+        self.conv3_2_complex_phi = ComplexConv2d(complex_in_channels // 8, complex_in_channels // 8, kernel_size=3, stride=1, padding=1)
+        self.bn3_2_complex_phi = ComplexBatchNorm2d(complex_in_channels // 8)
+        # E_phi 输出头
+        self.head_complex_phi = ComplexConv2d(complex_in_channels // 8, 1, kernel_size=1, stride=1, padding=0)
 
         
     def encode(self, *, vertices, faces, face_edges, in_em):
@@ -231,7 +248,6 @@ class MeshCodec(Module):
         x = x.reshape(x.size(0), -1, 45, 90) 
         
         # --- Complex Decoder Forward Pass ---
-        # x 的 shape: [batch, middim, 45, 90]
         # 将实数张量 x 转换为复数张量
         # 前一半通道作为实部，后一半通道作为虚部
         middim_half = x.shape[1] // 2
@@ -239,58 +255,77 @@ class MeshCodec(Module):
         x_im = x[:, middim_half:, :, :]
         x_complex = torch.complex(x_re, x_im)
 
-        # 第一次上采样
-        x_complex = self.upconv1_complex(x_complex)
-        x_complex = self.bn1_complex(x_complex)
-        x_complex = complex_relu(x_complex)
+        # --- E_theta Decoder Path ---
+        x_theta = self.upconv1_complex_theta(x_complex)
+        x_theta = self.bn1_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
+        x_theta = self.conv1_1_complex_theta(x_theta)
+        x_theta = self.bn1_1_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
+        x_theta = self.conv1_2_complex_theta(x_theta)
+        x_theta = self.bn1_2_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
         
-        x_complex = self.conv1_1_complex(x_complex)
-        x_complex = self.bn1_1_complex(x_complex)
-        x_complex = complex_relu(x_complex)
-        
-        x_complex = self.conv1_2_complex(x_complex)
-        x_complex = self.bn1_2_complex(x_complex)
-        x_complex = complex_relu(x_complex)
-        
-        # 第二次上采样
-        x_complex = self.upconv2_complex(x_complex)
-        x_complex = self.bn2_complex(x_complex)
-        x_complex = complex_relu(x_complex)
-        
-        x_complex = self.conv2_1_complex(x_complex)
-        x_complex = self.bn2_1_complex(x_complex)
-        x_complex = complex_relu(x_complex)
-        
-        x_complex = self.conv2_2_complex(x_complex)
-        x_complex = self.bn2_2_complex(x_complex)
-        x_complex = complex_relu(x_complex)
-        
-        # 第三次上采样
-        x_complex = self.upconv3_complex(x_complex)
-        x_complex = self.bn3_complex(x_complex)
-        x_complex = complex_relu(x_complex)
-        
-        x_complex = self.conv3_1_complex(x_complex)
-        x_complex = self.bn3_1_complex(x_complex)
-        x_complex = complex_relu(x_complex)
+        x_theta = self.upconv2_complex_theta(x_theta)
+        x_theta = self.bn2_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
+        x_theta = self.conv2_1_complex_theta(x_theta)
+        x_theta = self.bn2_1_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
+        x_theta = self.conv2_2_complex_theta(x_theta)
+        x_theta = self.bn2_2_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
 
-        x_complex = self.conv3_2_complex(x_complex)
-        x_complex = self.bn3_2_complex(x_complex)
-        x_complex = complex_relu(x_complex)
+        x_theta = self.upconv3_complex_theta(x_theta)
+        x_theta = self.bn3_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
+        x_theta = self.conv3_1_complex_theta(x_theta)
+        x_theta = self.bn3_1_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
+        x_theta = self.conv3_2_complex_theta(x_theta)
+        x_theta = self.bn3_2_complex_theta(x_theta)
+        x_theta = complex_relu(x_theta)
+        
+        e_theta_complex = self.head_complex_theta(x_theta)
 
-        # 最终输出头
-        # output_complex 的 shape: [batch, 2, H, W], dtype=torch.complex64
-        # 通道0: E_theta (复数), 通道1: E_phi (复数)
-        output_complex = self.head_complex(x_complex)
+        # --- E_phi Decoder Path ---
+        x_phi = self.upconv1_complex_phi(x_complex)
+        x_phi = self.bn1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv1_1_complex_phi(x_phi)
+        x_phi = self.bn1_1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv1_2_complex_phi(x_phi)
+        x_phi = self.bn1_2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+
+        x_phi = self.upconv2_complex_phi(x_phi)
+        x_phi = self.bn2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv2_1_complex_phi(x_phi)
+        x_phi = self.bn2_1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv2_2_complex_phi(x_phi)
+        x_phi = self.bn2_2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+
+        x_phi = self.upconv3_complex_phi(x_phi)
+        x_phi = self.bn3_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv3_1_complex_phi(x_phi)
+        x_phi = self.bn3_1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv3_2_complex_phi(x_phi)
+        x_phi = self.bn3_2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+
+        e_phi_complex = self.head_complex_phi(x_phi)
 
         # 将复数输出分解为 4 个实数通道以匹配 GT 格式
-        e_theta = output_complex[:, 0:1, :, :]
-        e_phi   = output_complex[:, 1:2, :, :]
-
-        out_re_etheta = e_theta.real
-        out_im_etheta = e_theta.imag
-        out_re_ephi   = e_phi.real
-        out_im_ephi   = e_phi.imag
+        out_re_etheta = e_theta_complex.real
+        out_im_etheta = e_theta_complex.imag
+        out_re_ephi   = e_phi_complex.real
+        out_im_ephi   = e_phi_complex.imag
         
         return torch.cat([out_re_etheta, out_im_etheta, out_re_ephi, out_im_ephi], dim=1)
     
