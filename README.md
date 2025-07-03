@@ -59,3 +59,5 @@ E_total_abs_compute = torch.sqrt(E_total_abs_sq)
 
 2025年7月3日10:35:02 预测一个复数也不行 看着区分不开 是不是conditioning？ 我草![alt text](ref/image.jpeg)我草但是加大参数量就有用了 Tr0也可以。问题是还是有肿瘤，是不是也是conditioning的问题。试试看不要conditioning能不能学好 有没有肿瘤; 或者再加倍一下middim试试看！
 
+2025年7月3日20:40:01 实现了sincos Incident angle embedding conditioning，看看效果
+
