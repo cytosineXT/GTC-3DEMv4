@@ -90,86 +90,164 @@ def plot4D_E_RealImage(ri_tensor, savedir, logger=None, use_same_max=False, cutm
         use_same_max (bool): 如果为True，所有子图使用统一的颜色刻度范围。
         logger: 可选的日志记录器。
     """
-    # tic = time.time()
+    if ri_tensor.shape[0] == 4:
+        # tic = time.time()
 
-    if ri_tensor.ndim != 3:
-        logger.info(f"警告: 输入张量维度不正确，期望3D张量，但实际维度为{ri_tensor.ndim}D。尝试将其转换为3D张量。")
-        ri_tensor = ri_tensor.squeeze()  # 确保是3D张量
+        if ri_tensor.ndim != 3:
+            logger.info(f"警告: 输入张量维度不正确，期望3D张量，但实际维度为{ri_tensor.ndim}D。尝试将其转换为3D张量。")
+            ri_tensor = ri_tensor.squeeze()  # 确保是3D张量
 
-    # E_theta_real = ri_tensor[:, :, 0] #原始数据channel在最后一个维度
-    # E_theta_imagine = ri_tensor[:, :, 1]
-    # E_phi_real = ri_tensor[:, :, 2]
-    # E_phi_imagine = ri_tensor[:, :, 3]
-    E_theta_real = ri_tensor[0, :, :] #网络运行的数据channel维在最前面
-    E_theta_imagine = ri_tensor[1, :, :]
-    E_phi_real = ri_tensor[2, :, :]
-    E_phi_imagine = ri_tensor[3, :, :]
+        # E_theta_real = ri_tensor[:, :, 0] #原始数据channel在最后一个维度
+        # E_theta_imagine = ri_tensor[:, :, 1]
+        # E_phi_real = ri_tensor[:, :, 2]
+        # E_phi_imagine = ri_tensor[:, :, 3]
+        E_theta_real = ri_tensor[0, :, :] #网络运行的数据channel维在最前面
+        E_theta_imagine = ri_tensor[1, :, :]
+        E_phi_real = ri_tensor[2, :, :]
+        E_phi_imagine = ri_tensor[3, :, :]
 
-    # # --- 2. 动态加载总场强的真值 (Ground Truth) ---
-    # amphase_path = ri_tensor_path.replace('_RealImage/', '_Amphase/').replace('_RI.pt', '.pt')    
-    # try:
-    #     amphase_tensor_gt = torch.load(amphase_path, map_location=torch.device('cpu'))
-    #     E_total_abs_gt = amphase_tensor_gt[:, :, 0]
-    # except FileNotFoundError:
-    #     print(f"警告: 未找到对应的真值文件: {amphase_path}。总场强GT将无法绘制。")
-    #     E_total_abs_gt = torch.zeros_like(E_theta_real)
-    # # E_total_abs_gt = torch.load('/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_Amphase/b7fd_E_mie_train/b7fd_theta60phi30f0.39.pt')[:, :, 0] # 直接加载总场强的实部
+        # # --- 2. 动态加载总场强的真值 (Ground Truth) ---
+        # amphase_path = ri_tensor_path.replace('_RealImage/', '_Amphase/').replace('_RI.pt', '.pt')    
+        # try:
+        #     amphase_tensor_gt = torch.load(amphase_path, map_location=torch.device('cpu'))
+        #     E_total_abs_gt = amphase_tensor_gt[:, :, 0]
+        # except FileNotFoundError:
+        #     print(f"警告: 未找到对应的真值文件: {amphase_path}。总场强GT将无法绘制。")
+        #     E_total_abs_gt = torch.zeros_like(E_theta_real)
+        # # E_total_abs_gt = torch.load('/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_Amphase/b7fd_E_mie_train/b7fd_theta60phi30f0.39.pt')[:, :, 0] # 直接加载总场强的实部
 
-    # --- 3. 从实部虚部正确计算总场强（极化椭圆长半轴）---
-    E_total_abs_compute = compute_total_from_RI(ri_tensor)
+        # --- 3. 从实部虚部正确计算总场强（极化椭圆长半轴）---
+        E_total_abs_compute = compute_total_from_RI(ri_tensor)
 
-    # --- 4. 准备绘图数据 ---
-    fig, axes = plt.subplots(3, 2, figsize=(14, 15))
-    fig.suptitle('E-Field Real/Imaginary Components', fontsize=16)
+        # --- 4. 准备绘图数据 ---
+        fig, axes = plt.subplots(3, 2, figsize=(14, 15))
+        fig.suptitle('E-Field Real/Imaginary Components', fontsize=16)
 
-    if not cutmax:
-        cutmax = [None, None, None, None, None]
+        if not cutmax:
+            cutmax = [None, None, None, None, None]
 
-    components_data = [
-        (E_theta_real, 'Real(E_theta)', 'V/m', cutmax[0]),
-        (E_theta_imagine, 'Imag(E_theta)', 'V/m', cutmax[1]),
-        (E_phi_real, 'Real(E_phi)', 'V/m', cutmax[2]),
-        (E_phi_imagine, 'Imag(E_phi)', 'V/m', cutmax[3]),
-        # (E_total_abs_gt, 'Total E-Field GT', 'V/m'),
-        (E_total_abs_compute, 'Total E-Field Computed', 'V/m', cutmax[4])
-    ]
-    
-    # --- 5. 新增功能：计算全局颜色范围 ---
-    global_min, global_max = None, None
-    if use_same_max:
-        # 将所有6个张量的数据堆叠起来，高效地计算全局最大最小值
-        all_tensors = [d[0] for d in components_data]
-        stacked_data = torch.stack(all_tensors)
-        global_min = stacked_data.min().item()
-        global_max = stacked_data.max().item()
-        print(f"启用全局颜色刻度: Min={global_min:.4f}, Max={global_max:.4f}")
-
-    # --- 6. 绘制 3x2 六子图 ---
-    ax_flat = axes.flatten()
-    for i, (data, title, label, cutmax1) in enumerate(components_data):
-        ax = ax_flat[i]
-        # 根据 use_same_max 参数决定 vmin 和 vmax
-        if use_same_max:
-            vmin, vmax = global_min, global_max
-        else:
-            vmin, vmax = None, cutmax1
+        components_data = [
+            (E_theta_real, 'Real(E_theta)', 'V/m', cutmax[0]),
+            (E_theta_imagine, 'Imag(E_theta)', 'V/m', cutmax[1]),
+            (E_phi_real, 'Real(E_phi)', 'V/m', cutmax[2]),
+            (E_phi_imagine, 'Imag(E_phi)', 'V/m', cutmax[3]),
+            # (E_total_abs_gt, 'Total E-Field GT', 'V/m'),
+            (E_total_abs_compute, 'Total E-Field Computed', 'V/m', cutmax[4])
+        ]
         
-        im = ax.imshow(data.detach().cpu().numpy(), cmap='jet', origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
-        ax.set_title(title)
-        ax.set_xlabel("Theta Index")
-        ax.set_ylabel("Phi Index")
-        fig.colorbar(im, ax=ax, label=label)
+        # --- 5. 新增功能：计算全局颜色范围 ---
+        global_min, global_max = None, None
+        if use_same_max:
+            # 将所有6个张量的数据堆叠起来，高效地计算全局最大最小值
+            all_tensors = [d[0] for d in components_data]
+            stacked_data = torch.stack(all_tensors)
+            global_min = stacked_data.min().item()
+            global_max = stacked_data.max().item()
+            print(f"启用全局颜色刻度: Min={global_min:.4f}, Max={global_max:.4f}")
 
-    if len(components_data)==5:
-        axes[2, 1].axis('off')
+        # --- 6. 绘制 3x2 六子图 ---
+        ax_flat = axes.flatten()
+        for i, (data, title, label, cutmax1) in enumerate(components_data):
+            ax = ax_flat[i]
+            # 根据 use_same_max 参数决定 vmin 和 vmax
+            if use_same_max:
+                vmin, vmax = global_min, global_max
+            else:
+                vmin, vmax = None, cutmax1
+            
+            im = ax.imshow(data.detach().cpu().numpy(), cmap='jet', origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
+            ax.set_title(title)
+            ax.set_xlabel("Theta Index")
+            ax.set_ylabel("Phi Index")
+            fig.colorbar(im, ax=ax, label=label)
 
-    # 调整布局防止重叠
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    # 保存和显示图像
-    plt.savefig(savedir) #这一步好慢
-    # plt.show()
-    plt.close(fig)
-    # logger.info(f'画图并保存到 {os.path.basename(savedir)} 用时：{time.time()-tic:.2f}s')
+        if len(components_data)==5:
+            axes[2, 1].axis('off')
+
+        # 调整布局防止重叠
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        # 保存和显示图像
+        plt.savefig(savedir) #这一步好慢
+        # plt.show()
+        plt.close(fig)
+        # logger.info(f'画图并保存到 {os.path.basename(savedir)} 用时：{time.time()-tic:.2f}s')
+    elif ri_tensor.shape[0] == 2:
+        if ri_tensor.ndim != 3:
+            logger.info(f"警告: 输入张量维度不正确，期望3D张量，但实际维度为{ri_tensor.ndim}D。尝试将其转换为3D张量。")
+            ri_tensor = ri_tensor.squeeze()  # 确保是3D张量
+
+        # E_theta_real = ri_tensor[:, :, 0] #原始数据channel在最后一个维度
+        # E_theta_imagine = ri_tensor[:, :, 1]
+        # E_phi_real = ri_tensor[:, :, 2]
+        # E_phi_imagine = ri_tensor[:, :, 3]
+        E_theta_real = ri_tensor[0, :, :] #网络运行的数据channel维在最前面
+        E_theta_imagine = ri_tensor[1, :, :]
+
+        # # --- 2. 动态加载总场强的真值 (Ground Truth) ---
+        # amphase_path = ri_tensor_path.replace('_RealImage/', '_Amphase/').replace('_RI.pt', '.pt')    
+        # try:
+        #     amphase_tensor_gt = torch.load(amphase_path, map_location=torch.device('cpu'))
+        #     E_total_abs_gt = amphase_tensor_gt[:, :, 0]
+        # except FileNotFoundError:
+        #     print(f"警告: 未找到对应的真值文件: {amphase_path}。总场强GT将无法绘制。")
+        #     E_total_abs_gt = torch.zeros_like(E_theta_real)
+        # # E_total_abs_gt = torch.load('/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_Amphase/b7fd_E_mie_train/b7fd_theta60phi30f0.39.pt')[:, :, 0] # 直接加载总场强的实部
+
+        # --- 3. 从实部虚部正确计算总场强（极化椭圆长半轴）---
+        # E_total_abs_compute = compute_total_from_RI(ri_tensor)
+
+        # --- 4. 准备绘图数据 ---
+        fig, axes = plt.subplots(3, 2, figsize=(14, 15))
+        fig.suptitle('E-Field Real/Imaginary Components', fontsize=16)
+
+        if not cutmax:
+            cutmax = [None, None, None]
+
+        components_data = [
+            (E_theta_real, 'Real(E_theta)', 'V/m', cutmax[0]),
+            (E_theta_imagine, 'Imag(E_theta)', 'V/m', cutmax[1]),
+            # (E_phi_real, 'Real(E_phi)', 'V/m', cutmax[2]),
+            # (E_phi_imagine, 'Imag(E_phi)', 'V/m', cutmax[3]),
+            # (E_total_abs_gt, 'Total E-Field GT', 'V/m'),
+            # (E_total_abs_compute, 'Total E-Field Computed', 'V/m', cutmax[4])
+        ]
+        
+        # --- 5. 新增功能：计算全局颜色范围 ---
+        global_min, global_max = None, None
+        if use_same_max:
+            # 将所有6个张量的数据堆叠起来，高效地计算全局最大最小值
+            all_tensors = [d[0] for d in components_data]
+            stacked_data = torch.stack(all_tensors)
+            global_min = stacked_data.min().item()
+            global_max = stacked_data.max().item()
+            print(f"启用全局颜色刻度: Min={global_min:.4f}, Max={global_max:.4f}")
+
+        # --- 6. 绘制 3x2 六子图 ---
+        ax_flat = axes.flatten()
+        for i, (data, title, label, cutmax1) in enumerate(components_data):
+            ax = ax_flat[i]
+            # 根据 use_same_max 参数决定 vmin 和 vmax
+            if use_same_max:
+                vmin, vmax = global_min, global_max
+            else:
+                vmin, vmax = None, cutmax1
+            
+            im = ax.imshow(data.detach().cpu().numpy(), cmap='jet', origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
+            ax.set_title(title)
+            ax.set_xlabel("Theta Index")
+            ax.set_ylabel("Phi Index")
+            fig.colorbar(im, ax=ax, label=label)
+
+        if len(components_data)==5:
+            axes[2, 1].axis('off')
+
+        # 调整布局防止重叠
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        # 保存和显示图像
+        plt.savefig(savedir) #这一步好慢
+        # plt.show()
+        plt.close(fig)
+        # logger.info(f'画图并保存到 {os.path.basename(savedir)} 用时：{time.time()-tic:.2f}s')
 
 
 def plotstatistic2(psnr_list, ssim_list, mse_list, statisticdir):
@@ -283,7 +361,10 @@ def valmain(draw, device, weight, rcsdir, save_dir, logger, epoch, trainval=Fals
             if draw == True:
                 for i in range(decoded.shape[0]): 
                     single_outrcs = decoded[i].squeeze().to(device) #这里i是batch索引
-                    single_rcs1 = rcs1[i].squeeze().to(device)
+                    if single_outrcs.shape[0] == 2:
+                        single_rcs1 = rcs1[i].squeeze().to(device)[0:2,:,:] 
+                    elif single_outrcs.shape[0] == 4:
+                        single_rcs1 = rcs1[i].squeeze().to(device)
                     single_diff = single_rcs1-single_outrcs
 
                     eminfo = [int(in_em0[1][i]), int(in_em0[2][i]), float(in_em0[3][i])]
@@ -303,7 +384,10 @@ def valmain(draw, device, weight, rcsdir, save_dir, logger, epoch, trainval=Fals
                     # out2Drcspngpathdiff = os.path.join(save_dir2,f'epoch{epoch}_{plane}_theta{eminfo[0]}phi{eminfo[1]}freq{eminfo[2]:.3f}_psnr{psnr1:.2f}_ssim{ssim1:.4f}_mse{mse1:.4f}_diff{(torch.max(torch.abs(torch.max(single_diff)),torch.abs(torch.min(single_diff)))).item():.4f}_2Ddiff.png')
                     plot4D_E_RealImage(single_rcs1, savedir=out2DGTpngpath, logger=logger)
                     plot4D_E_RealImage(single_outrcs, savedir=out2DEpngpath, logger=logger)
-                    plot4D_E_RealImage(single_outrcs, savedir=out2DEpngpathcut, logger=logger,cutmax=[torch.max(single_rcs1[0]).item(),torch.max(single_rcs1[1]).item(),torch.max(single_rcs1[2]).item(),torch.max(single_rcs1[3]).item(),None])
+                    if single_outrcs.shape[0] == 2:
+                        plot4D_E_RealImage(single_outrcs, savedir=out2DEpngpathcut, logger=logger,cutmax=[torch.max(single_rcs1[0]).item(),torch.max(single_rcs1[1]).item(),None, None,None])
+                    elif single_outrcs.shape[0] == 4:
+                        plot4D_E_RealImage(single_outrcs, savedir=out2DEpngpathcut, logger=logger,cutmax=[torch.max(single_rcs1[0]).item(),torch.max(single_rcs1[1]).item(),torch.max(single_rcs1[2]).item(),torch.max(single_rcs1[3]).item(),None])
                     # plot4D_E_RealImage(single_diff, savedir=out2Drcspngpathdiff, logger=logger)
 
                     # if draw3d == True:

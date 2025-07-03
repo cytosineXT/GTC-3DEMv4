@@ -89,36 +89,47 @@ def helmholtz_consistency(E_field_4d, k0):
     """
     with torch.no_grad():
         # 分离 E_theta 和 E_phi 的复数场
-        E_theta = E_field_4d[:, 0, :, :] + 1j * E_field_4d[:, 1, :, :]
-        E_phi = E_field_4d[:, 2, :, :] + 1j * E_field_4d[:, 3, :, :]
+        if E_field_4d.shape[1] == 4:
+            E_theta = E_field_4d[:, 0, :, :] + 1j * E_field_4d[:, 1, :, :]
+            E_phi = E_field_4d[:, 2, :, :] + 1j * E_field_4d[:, 3, :, :]
 
-        # 计算复数拉普拉斯
-        lap_E_theta = _laplacian(E_theta.real) + 1j * _laplacian(E_theta.imag)
-        lap_E_phi = _laplacian(E_phi.real) + 1j * _laplacian(E_phi.imag)
+            # 计算复数拉普拉斯
+            lap_E_theta = _laplacian(E_theta.real) + 1j * _laplacian(E_theta.imag)
+            lap_E_phi = _laplacian(E_phi.real) + 1j * _laplacian(E_phi.imag)
 
-        # --- 核心修正 ---
-        # k0 的原始形状是 [B]，为了能和 [B, H, W] 的场进行广播乘法，
-        # 需要将其形状变为 [B, 1, 1]。
-        if k0.dim() == 1:
-            k0 = k0.view(-1, 1, 1)
+            # --- 核心修正 ---
+            # k0 的原始形状是 [B]，为了能和 [B, H, W] 的场进行广播乘法，
+            # 需要将其形状变为 [B, 1, 1]。
+            if k0.dim() == 1:
+                k0 = k0.view(-1, 1, 1)
 
-        # 现在可以安全地进行计算
-        # k0**2 的形状是 [B, 1, 1]
-        # E_theta 的形状是 [B, 360, 720]
-        # 广播操作会自动将k0**2扩展到 [B, 360, 720]
-        residual_theta = lap_E_theta + k0**2 * E_theta
-        residual_phi = lap_E_phi + k0**2 * E_phi
+            # 现在可以安全地进行计算
+            # k0**2 的形状是 [B, 1, 1]
+            # E_theta 的形状是 [B, 360, 720]
+            # 广播操作会自动将k0**2扩展到 [B, 360, 720]
+            residual_theta = lap_E_theta + k0**2 * E_theta
+            residual_phi = lap_E_phi + k0**2 * E_phi
 
-        # --- 范数归一化解释 ---
-        # 我们计算残差的能量(范数)，并用原始场的能量(范数)来归一化它。
-        # 这就像计算一个信噪比或相对误差，使得结果与电场的绝对强度无关，
-        # 从而可以在不同样本间进行公平比较。
-        residual_norm = torch.norm(residual_theta) + torch.norm(residual_phi)
-        field_norm = torch.norm(k0**2 * E_theta) + torch.norm(k0**2 * E_phi)
+            # --- 范数归一化解释 ---
+            # 我们计算残差的能量(范数)，并用原始场的能量(范数)来归一化它。
+            # 这就像计算一个信噪比或相对误差，使得结果与电场的绝对强度无关，
+            # 从而可以在不同样本间进行公平比较。
+            residual_norm = torch.norm(residual_theta) + torch.norm(residual_phi)
+            field_norm = torch.norm(k0**2 * E_theta) + torch.norm(k0**2 * E_phi)
 
-        # 避免除以零的保护措施
-        consistency = residual_norm / (field_norm + 1e-8)
-        return consistency
+            # 避免除以零的保护措施
+            consistency = residual_norm / (field_norm + 1e-8)
+            return consistency
+        elif E_field_4d.shape[1] == 2:   
+            E_theta = E_field_4d[:, 0, :, :] + 1j * E_field_4d[:, 1, :, :]
+            lap_E_theta = _laplacian(E_theta.real) + 1j * _laplacian(E_theta.imag)
+            if k0.dim() == 1:
+                k0 = k0.view(-1, 1, 1)
+            residual_theta = lap_E_theta + k0**2 * E_theta
+            residual_norm = torch.norm(residual_theta) 
+            field_norm = torch.norm(k0**2 * E_theta) 
+            consistency = residual_norm / (field_norm + 1e-8)
+            return consistency 
 
 
 def bandlimit_energy_ratio(E_field_4d, k0, radius_factor=1.5): #这里怎么也是用的比例啊 好像比例确实合理一点？
@@ -140,7 +151,7 @@ def bandlimit_energy_ratio(E_field_4d, k0, radius_factor=1.5): #这里怎么也�
     if k0.dim() == 1:
         k0 = k0.view(-1, 1, 1)
     
-    # 对每个通道进行2D FFT
+        # 对每个通道进行2D FFT
         fft_result = torch.fft.fftshift(torch.fft.fft2(E_field_4d, dim=(-2, -1)))
         
         # 创建k空间坐标网格
