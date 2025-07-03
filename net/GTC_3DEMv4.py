@@ -1,4 +1,4 @@
-# GTC-3DEMv4_complexPyTorch.py
+# GTC-3DEMv4.4
 #
 # 主要改动:
 # 1. 引入 complexPyTorch 库，这是一个现代且维护良好的复数网络库。
@@ -24,6 +24,33 @@ from math import pi
 from complexPyTorch.complexLayers import ComplexConvTranspose2d, ComplexConv2d, ComplexBatchNorm2d
 from complexPyTorch.complexFunctions import complex_relu
 
+def get_angle_embedding(theta_degrees, phi_degrees):
+    """
+    将物理角度（theta, phi）转换为4D周期性嵌入向量。
+    
+    参数:
+        theta_degrees (Tensor): 天顶角 (polar angle), 范围 0-180.
+        phi_degrees (Tensor): 方位角 (azimuthal angle), 范围 0-360.
+        
+    返回:
+        Tensor: 形状为 [N, 1, 4] 的嵌入向量.
+    """
+    # 1. 将角度从度(degrees)转换为弧度(radians)
+    theta_rad = theta_degrees * (torch.pi / 180.0)
+    phi_rad = phi_degrees * (torch.pi / 180.0)
+
+    # 2. 计算每个角度的sin和cos值
+    theta_cos = torch.cos(theta_rad)
+    theta_sin = torch.sin(theta_rad)
+    phi_cos = torch.cos(phi_rad)
+    phi_sin = torch.sin(phi_rad)
+    
+    # 3. 堆叠成 [N, 4] 的张量
+    # 约定顺序: [theta_cos, theta_sin, phi_cos, phi_sin]
+    embedding = torch.stack([theta_cos, theta_sin, phi_cos, phi_sin], dim=1)
+    
+    # 4. 增加一个维度以匹配后续层的期望输入形状 [N, 1, 4]
+    return embedding.unsqueeze(1)
 
 def l2norm(t):
     return F.normalize(t, dim = -1, p = 2)
@@ -93,13 +120,16 @@ class MeshCodec(Module):
             ):
         super().__init__()
 
-        # --- Encoder (保持不变) ---
         self.condfreqlayers = ModuleList([
             nn.Linear(1, 64), nn.Linear(1, 128), nn.Linear(1, 256), nn.Linear(1, 256),
         ])
         self.condanglelayers = ModuleList([
-            nn.Linear(2, 64), nn.Linear(2, 128), nn.Linear(2, 256), nn.Linear(2, 256),
-        ])
+            nn.Linear(4, 64), nn.Linear(4, 128), nn.Linear(4, 256), nn.Linear(4, 256),
+        ])#sincos方案后 将输入的维度从 2 改为 4
+
+        # self.condanglelayers = ModuleList([ nn.Linear(2, 64), nn.Linear(2, 128), nn.Linear(2, 256), nn.Linear(2, 256),])
+        
+
         self.angle_embed = nn.Linear(3, 3*dim_angle_embed)
         self.area_embed = nn.Linear(1, dim_area_embed)
         self.normal_embed = nn.Linear(3, 3*dim_normal_embed)
@@ -131,12 +161,12 @@ class MeshCodec(Module):
         ])
 
         #--- Adaptation Module (保持不变) ---
-        self.conv1d1 = nn.Conv1d(576, middim*2, kernel_size=10, stride=10, dilation=1 ,padding=0)
+        self.conv1d1 = nn.Conv1d(576, middim*4, kernel_size=10, stride=10, dilation=1 ,padding=0)
         self.fc1d1 = nn.Linear(2250, 45*90)
 
         # --- Complex Decoder (重大修改 - 两个独立的复数解码器头) ---
         assert middim % 2 == 0, "middim 必须是偶数才能转换为复数通道"
-        complex_in_channels = middim
+        complex_in_channels = middim *2 #不减半
         # complex_in_channels = middim // 2
         
         # --- Decoder for E_theta ---
@@ -216,7 +246,8 @@ class MeshCodec(Module):
         face_embed = self.init_encoder_act_and_norm(face_embed)
         face_embed = face_embed.reshape(orig_face_embed_shape[0], orig_face_embed_shape[1], -1)
 
-        in_angle = torch.stack([in_em[1]/180, in_em[2]/360]).t().float().unsqueeze(1).to(device)
+        # in_angle = torch.stack([in_em[1]/180, in_em[2]/360]).t().float().unsqueeze(1).to(device)
+        in_angle = get_angle_embedding(in_em[1].float(), in_em[2].float()).to(device) #sincos方案后
         in_freq = in_em[3].float().unsqueeze(1).unsqueeze(1).to(device)
 
         for i, (conv, act_norm) in enumerate(zip(self.encoders, self.encoder_act_and_norm)):
@@ -289,47 +320,46 @@ class MeshCodec(Module):
         
         e_theta_complex = self.head_complex_theta(x_theta)
 
-        # # --- E_phi Decoder Path ---
-        # x_phi = self.upconv1_complex_phi(x_complex)
-        # x_phi = self.bn1_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
-        # x_phi = self.conv1_1_complex_phi(x_phi)
-        # x_phi = self.bn1_1_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
-        # x_phi = self.conv1_2_complex_phi(x_phi)
-        # x_phi = self.bn1_2_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
+        # --- E_phi Decoder Path ---
+        x_phi = self.upconv1_complex_phi(x_complex)
+        x_phi = self.bn1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv1_1_complex_phi(x_phi)
+        x_phi = self.bn1_1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv1_2_complex_phi(x_phi)
+        x_phi = self.bn1_2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
 
-        # x_phi = self.upconv2_complex_phi(x_phi)
-        # x_phi = self.bn2_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
-        # x_phi = self.conv2_1_complex_phi(x_phi)
-        # x_phi = self.bn2_1_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
-        # x_phi = self.conv2_2_complex_phi(x_phi)
-        # x_phi = self.bn2_2_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
+        x_phi = self.upconv2_complex_phi(x_phi)
+        x_phi = self.bn2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv2_1_complex_phi(x_phi)
+        x_phi = self.bn2_1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv2_2_complex_phi(x_phi)
+        x_phi = self.bn2_2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
 
-        # x_phi = self.upconv3_complex_phi(x_phi)
-        # x_phi = self.bn3_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
-        # x_phi = self.conv3_1_complex_phi(x_phi)
-        # x_phi = self.bn3_1_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
-        # x_phi = self.conv3_2_complex_phi(x_phi)
-        # x_phi = self.bn3_2_complex_phi(x_phi)
-        # x_phi = complex_relu(x_phi)
+        x_phi = self.upconv3_complex_phi(x_phi)
+        x_phi = self.bn3_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv3_1_complex_phi(x_phi)
+        x_phi = self.bn3_1_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
+        x_phi = self.conv3_2_complex_phi(x_phi)
+        x_phi = self.bn3_2_complex_phi(x_phi)
+        x_phi = complex_relu(x_phi)
 
-        # e_phi_complex = self.head_complex_phi(x_phi)
+        e_phi_complex = self.head_complex_phi(x_phi)
 
         # 将复数输出分解为 4 个实数通道以匹配 GT 格式
         out_re_etheta = e_theta_complex.real
         out_im_etheta = e_theta_complex.imag
-        # out_re_ephi   = e_phi_complex.real
-        # out_im_ephi   = e_phi_complex.imag
+        out_re_ephi   = e_phi_complex.real
+        out_im_ephi   = e_phi_complex.imag
         
-        return torch.cat([out_re_etheta, out_im_etheta], dim=1)
-        # return torch.cat([out_re_etheta, out_im_etheta, out_re_ephi, out_im_ephi], dim=1)
+        return torch.cat([out_re_etheta, out_im_etheta, out_re_ephi, out_im_ephi], dim=1)
     
 
     def forward(self, *, vertices, faces, face_edges=None, in_em, GT=None, logger=None, device='cpu', loss_type='L1', **kwargs):
@@ -361,9 +391,7 @@ class MeshCodec(Module):
         
         else:
             if GT.dim() > 1 and GT.shape[2:4] == (361, 720):
-                GT = GT[:, :, :-1, :] #batch size, channel, 360, 720
-            
-            GT = GT[:, 0:2, :, :] #batch size, channel, 360, 720 #只跑二维
+                GT = GT[:, :, :-1, :]
             
             mainloss = loss_fn(decoded, GT)
             total_loss = mainloss.clone()
