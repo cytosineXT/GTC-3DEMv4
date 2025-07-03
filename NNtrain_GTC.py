@@ -39,22 +39,20 @@ def parse_args():
     parser.add_argument('--savedir', type=str, default='testtrain', help='exp output folder name')
     parser.add_argument('--mode', type=str, default='fasttest', help='10train 50fine 100fine fasttest')
     parser.add_argument('--loss', type=str, default='L1', help='L1 best, mse 2nd')
-    # parser.add_argument('--rcsdir', type=str, default='/mnt/Disk/jiangxiaotian/datasets/Datasets_3DEM/allplanes/mie/b943_mie_val', help='Path to rcs directory')
-    # parser.add_argument('--valdir', type=str, default='/mnt/Disk/jiangxiaotian/datasets/Datasets_3DEM/allplanes/mie/b943_mie_val', help='Path to validation directory') #3090red
-    # parser.add_argument('--rcsdir', type=str, default='/mnt/truenas_jiangxiaotian/allplanes/mie/b943_mie_val', help='Path to rcs directory')
-    # parser.add_argument('--valdir', type=str, default='/mnt/truenas_jiangxiaotian/allplanes/mie/b943_mie_val', help='Path to validation directory') #3090liang
-    parser.add_argument('--rcsdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_RealImage/testtrain', help='Path to rcs directory')
-    parser.add_argument('--valdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_RealImage/testtrain', help='Path to validation directory') #3090liang
+    # parser.add_argument('--rcsdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_RealImage/testtrain', help='Path to rcs directory')
+    # parser.add_argument('--valdir', type=str, default='/mnt/truenas_jiangxiaotian/Edataset/complexE_mie_RealImage/testtrain', help='Path to validation directory') #3090liang
+    parser.add_argument('--rcsdir', type=str, default='/mnt/Disk/jiangxiaotian/datasets/Datasets_3DEM/Edataset/complexE_mie_RealImage/testtrain', help='Path to rcs directory')
+    parser.add_argument('--valdir', type=str, default='/mnt/Disk/jiangxiaotian/datasets/Datasets_3DEM/Edataset/complexE_mie_RealImage/testtrain', help='Path to validation directory') #3090red
     parser.add_argument('--pretrainweight', type=str, default=None, help='Path to pretrained weights')
 
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     parser.add_argument('--attn', type=int, default=0, help='Transformer layers')
-    parser.add_argument('--lr', type=float, default=0.0001, help='Loss threshold or gamma parameter')
+    parser.add_argument('--lr', type=float, default=0.001, help='Loss threshold or gamma parameter')
     parser.add_argument('--cuda', type=str, default='cuda:0', help='CUDA device to use(cpu cuda:0 cuda:1...)')
     parser.add_argument('--fold', type=str, default=None, help='Fold to use for validation (None fold1 fold2 fold3 fold4)')
 
     parser.add_argument('--lam_main', type=float, default=10, help='control main loss, i love 0.001')
-    parser.add_argument('--lam_max', type=float, default=0, help='control max loss, i love 0.001')
+    parser.add_argument('--lam_max', type=float, default=0.0001, help='control max loss, i love 0.001')
     parser.add_argument('--lam_hel', type=float, default=0, help='control helmholtz loss, i love 0.001')
     parser.add_argument('--lam_fft', type=float, default=0, help='control fft loss, i love 0.001')
     parser.add_argument('--lam_rec', type=float, default=0, help='control receprocity loss, i love 0.001')
@@ -353,7 +351,10 @@ for i in range(epoch):
         if flag == 1:
             drawrcs = decoded[0].unsqueeze(0)
             drawem = torch.stack(in_em0[1:]).t()[0]
-            drawGT = rcs1[0].unsqueeze(0)
+            if drawrcs.shape[1] == 4:
+                drawGT = rcs1[0].unsqueeze(0)
+            elif drawrcs.shape[1] == 2: #新增二维图绘制
+                drawGT = rcs1[0].unsqueeze(0)[:,0:2,:,:]
             drawplane = in_em0[0][0]
             flag = 0
         for j in range(torch.stack(in_em0[1:]).t().shape[0]):
