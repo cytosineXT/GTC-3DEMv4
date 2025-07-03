@@ -1,4 +1,4 @@
-# GTC-3DEMv4_complexPyTorch.py
+# GTC-3DEMv4.4
 #
 # 主要改动:
 # 1. 引入 complexPyTorch 库，这是一个现代且维护良好的复数网络库。
@@ -131,12 +131,13 @@ class MeshCodec(Module):
         ])
 
         #--- Adaptation Module (保持不变) ---
-        self.conv1d1 = nn.Conv1d(576, middim, kernel_size=10, stride=10, dilation=1 ,padding=0)
+        self.conv1d1 = nn.Conv1d(576, middim*2, kernel_size=10, stride=10, dilation=1 ,padding=0)
         self.fc1d1 = nn.Linear(2250, 45*90)
 
         # --- Complex Decoder (重大修改 - 两个独立的复数解码器头) ---
         assert middim % 2 == 0, "middim 必须是偶数才能转换为复数通道"
-        complex_in_channels = middim // 2
+        complex_in_channels = middim #不减半
+        # complex_in_channels = middim // 2
         
         # --- Decoder for E_theta ---
         # 第一次上采样
@@ -221,7 +222,7 @@ class MeshCodec(Module):
         for i, (conv, act_norm) in enumerate(zip(self.encoders, self.encoder_act_and_norm)):
             condfreq = self.condfreqlayers[i](in_freq)
             condangle = self.condanglelayers[i](in_angle)
-            face_embed = face_embed + condangle + condfreq
+            # face_embed = face_embed + condangle + condfreq
             face_embed = face_embed.reshape(-1, face_embed.shape[-1])
             face_embed = conv(face_embed, face_edges)
             face_embed = act_norm(face_embed)
