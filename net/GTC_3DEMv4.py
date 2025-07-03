@@ -162,7 +162,6 @@ class MeshCodec(Module):
 
         #--- Adaptation Module (保持不变) ---
         self.conv1d1 = nn.Conv1d(576, middim*2, kernel_size=10, stride=10, dilation=1 ,padding=0)
-        self.conv1d1 = nn.Conv1d(576, middim*2, kernel_size=10, stride=10, dilation=1 ,padding=0)
         self.fc1d1 = nn.Linear(2250, 45*90)
 
         # --- Complex Decoder (重大修改 - 两个独立的复数解码器头) ---
