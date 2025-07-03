@@ -57,5 +57,7 @@ E_total_abs_compute = torch.sqrt(E_total_abs_sq)
 2025年6月30日15:43:50 尝试用两个decoder，分别预测复$E_{θ}$ 复$E_{φ}$
 2025年7月2日15:50:25 还是没货。Tr1有点效果，看来就是难度变大了。先看看先用一个复网络只预测一个复数行不行不要一下就4维，然后再试试两个头分别加个线性层可能会有用，然后再试试更合理的conditioning
 
-2025年7月3日10:35:02 预测一个复数也不行 看着区分不开 是不是conditioning？ 我草![alt text](ref/image.jpeg)我草但是加大参数量就有用了 Tr0也可以。问题是还是有肿瘤，是不是也是conditioning的问题。试试看不要conditioning能不能学好 有没有肿瘤
+2025年7月3日10:35:02 预测一个复数也不行 看着区分不开 是不是conditioning？ 我草![alt text](ref/image.jpeg)我草但是加大参数量就有用了 Tr0也可以。问题是还是有肿瘤，是不是也是conditioning的问题。试试看不要conditioning能不能学好 有没有肿瘤; 或者再加倍一下middim试试看！
+
+2025年7月3日20:40:01 实现了sincos Incident angle embedding conditioning，看看效果
 
