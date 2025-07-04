@@ -31,8 +31,8 @@ def setup_seed(seed):
 def parse_args():
     parser = argparse.ArgumentParser(description="Script with customizable parameters using argparse.")
     parser.add_argument('--epoch', type=int, default=2, help='Number of training epochs')
-    parser.add_argument('--batch', type=int, default=16, help='batchsize')
-    parser.add_argument('--valbatch', type=int, default=16, help='valbatchsize')
+    parser.add_argument('--batch', type=int, default=8, help='batchsize')
+    parser.add_argument('--valbatch', type=int, default=8, help='valbatchsize')
     parser.add_argument('--draw', type=bool, default=True, help='Whether to enable drawing')
 
     parser.add_argument('--trainname', type=str, default='v4.2', help='logname')

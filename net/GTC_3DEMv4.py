@@ -1,17 +1,7 @@
-# GTC-3DEMv4.4
-#
-# 主要改动:
-# 1. 引入 complexPyTorch 库，这是一个现代且维护良好的复数网络库。
-# 2. 将 Decoder 中的实数层替换为 complexPyTorch.complexLayers 中的复数版本。
-# 3. 为保持参数量近似，我们将进入Decoder的`middim`个实数通道分为两半，
-#    分别作为`middim/2`个复数通道的实部和虚部。后续复数层的通道数也相应减半。
-# 4. 修改了 decode 方法，增加了实数到复数的转换逻辑，并使用复数激活函数。
-# 5. (v4.3) 将原有的单解码器结构修改为两个独立的、不共享权重的解码器头。
-#    一个头专门用于预测 E_theta 复数场，另一个专门用于预测 E_phi 复数场。
-# 6. 最终将两个解码器头的复数输出分解为四个实数通道，以保持与原有代码和GT的兼容性。
-
+# GTC-3DEMv4.py
+# ... (前面的代码保持不变) ...
 from torch.nn import Module, ModuleList
-import torch 
+import torch
 from torch import nn
 from torch_geometric.nn.conv import SAGEConv
 import torch.nn.functional as F
@@ -24,6 +14,7 @@ from math import pi
 from complexPyTorch.complexLayers import ComplexConvTranspose2d, ComplexConv2d, ComplexBatchNorm2d
 from complexPyTorch.complexFunctions import complex_relu
 
+# ... (get_angle_embedding, l2norm, jxtget_face_coords, 等辅助函数保持不变) ...
 def get_angle_embedding(theta_degrees, phi_degrees):
     """
     将物理角度（theta, phi）转换为4D周期性嵌入向量。
@@ -102,6 +93,7 @@ def get_derived_face_featuresjxt(face_coords, in_em, device):
         emangle = incident_angle_mtx, emfreq = incident_freq_mtx
     )
 
+
 class MeshCodec(Module):
     def __init__(
             self,
@@ -119,7 +111,8 @@ class MeshCodec(Module):
             encoder_dims_through_depth = (64, 128, 256, 256, 576),    
             ):
         super().__init__()
-
+        
+        # ... (Encoder 部分保持不变) ...
         self.condfreqlayers = ModuleList([
             nn.Linear(1, 64), nn.Linear(1, 128), nn.Linear(1, 256), nn.Linear(1, 256),
         ])
@@ -160,16 +153,40 @@ class MeshCodec(Module):
             for _ in range(attn_encoder_depth)
         ])
 
+
         #--- Adaptation Module (保持不变) ---
         self.conv1d1 = nn.Conv1d(576, middim*4, kernel_size=10, stride=10, dilation=1 ,padding=0)
         self.fc1d1 = nn.Linear(2250, 45*90)
 
-        # --- Complex Decoder (重大修改 - 两个独立的复数解码器头) ---
+        # --- Complex Decoder ---
         assert middim % 2 == 0, "middim 必须是偶数才能转换为复数通道"
-        complex_in_channels = middim *2 #不减半
-        # complex_in_channels = middim // 2
+        complex_in_channels = middim * 2 # complex_in_channels = 128
+
+        # --- 【修改】为复数控制重新定义条件层 ---
+        # 1. 对进入Decoder前的实数部分进行控制
+        self.emangle_condembed1 = nn.Linear(4, 2250)
+        self.emfreq_condembed1 = nn.Linear(1, 2250)
+        self.emangle_condembed2 = nn.Linear(4, 4050)
+        self.emfreq_condembed2 = nn.Linear(1, 4050)
+
+        # 2. 为Decoder的复数部分定义新的控制层
+        #    输入维度3 = 2(angle) + 1(freq)
+        #    输出维度ch * 2 = ch(real) + ch(imag)
+        decoder_ch = [complex_in_channels // 2, complex_in_channels // 4, complex_in_channels // 8] # [64, 32, 16]
         
-        # --- Decoder for E_theta ---
+        self.cond_layers_theta = ModuleList()
+        self.cond_layers_phi = ModuleList()
+        for ch in decoder_ch:
+            # 每个block有3个控制点，为保持独立性，创建3个独立的线性层
+            self.cond_layers_theta.append(nn.Linear(3, ch * 2))
+            self.cond_layers_theta.append(nn.Linear(3, ch * 2))
+            self.cond_layers_theta.append(nn.Linear(3, ch * 2))
+            
+            self.cond_layers_phi.append(nn.Linear(3, ch * 2))
+            self.cond_layers_phi.append(nn.Linear(3, ch * 2))
+            self.cond_layers_phi.append(nn.Linear(3, ch * 2))
+
+        # --- Decoder for E_theta and E_phi (网络结构保持不变) ---
         # 第一次上采样
         self.upconv1_complex_theta = ComplexConvTranspose2d(complex_in_channels, complex_in_channels // 2, kernel_size=2, stride=2)
         self.bn1_complex_theta = ComplexBatchNorm2d(complex_in_channels // 2)
@@ -219,7 +236,7 @@ class MeshCodec(Module):
         # E_phi 输出头
         self.head_complex_phi = ComplexConv2d(complex_in_channels // 8, 1, kernel_size=1, stride=1, padding=0)
 
-        
+    # ... (encode 方法保持不变) ...
     def encode(self, *, vertices, faces, face_edges, in_em):
         device = vertices.device 
         face_coords = jxtget_face_coords(vertices, faces) 
@@ -265,91 +282,139 @@ class MeshCodec(Module):
             face_embed = face_embed.permute(1, 0, 2)
 
         return face_embed, in_angle, in_freq
-    
+
     def decode(self, x, in_angle, in_freq, device):
-        # Adaptation Module (保持不变)
+        # 准备条件输入
+        in_theta = in_angle[:, :, 0:2].squeeze(1) # [B, 2]
+        in_phi = in_angle[:, :, 2:].squeeze(1)   # [B, 2]
+        in_freq_flat = in_freq.squeeze(1)         # [B, 1]
+        
+        cond_input_theta = torch.cat([in_theta, in_freq_flat], dim=1) # [B, 3]
+        cond_input_phi = torch.cat([in_phi, in_freq_flat], dim=1)     # [B, 3]
+        
+        # --- 【修改】定义一个生成复数条件并添加的辅助函数 ---
+        def add_complex_cond(x_complex, layer, cond_input):
+            # 1. 生成 2*C 通道的条件向量
+            cond = layer(cond_input)
+            # 2. 增加 H, W 维度以进行广播
+            cond = cond.unsqueeze(-1).unsqueeze(-1)
+            # 3. 沿通道维度切分为实部和虚部
+            cond_real, cond_imag = cond.chunk(2, dim=1)
+            # 4. 创建复数条件并与输入相加
+            return x_complex + torch.complex(cond_real, cond_imag)
+
+        # --- Decoder前实数部分的控制 (保持不变) ---
+        condangle1 = self.emangle_condembed1(in_angle.squeeze(1))
+        condangle2 = self.emangle_condembed2(in_angle.squeeze(1))
+        condfreq1 = self.emfreq_condembed1(in_freq_flat)
+        condfreq2 = self.emfreq_condembed2(in_freq_flat)
+
         pad_size = 22500 - x.size(1)
         x = F.pad(x, (0, 0, 0, pad_size)) 
         x = x.view(x.size(0), -1, 22500) 
         
         x = self.conv1d1(x) 
         x = F.relu(x)
+        x = x + condangle1.unsqueeze(1) + condfreq1.unsqueeze(1)
 
         x = self.fc1d1(x)
         x = x.reshape(x.size(0), -1, 45*90) 
+        x = x + condangle2.unsqueeze(1) + condfreq2.unsqueeze(1)
         x = x.reshape(x.size(0), -1, 45, 90) 
         
-        # --- Complex Decoder Forward Pass ---
         # 将实数张量 x 转换为复数张量
-        # 前一半通道作为实部，后一半通道作为虚部
         middim_half = x.shape[1] // 2
         x_re = x[:, :middim_half, :, :]
         x_im = x[:, middim_half:, :, :]
         x_complex = torch.complex(x_re, x_im)
 
-        # --- E_theta Decoder Path ---
+        # --- 【修改】E_theta Decoder Path (使用新的复数控制) ---
+        # Block 1
         x_theta = self.upconv1_complex_theta(x_complex)
         x_theta = self.bn1_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[0], cond_input_theta)
         x_theta = self.conv1_1_complex_theta(x_theta)
         x_theta = self.bn1_1_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[1], cond_input_theta)
         x_theta = self.conv1_2_complex_theta(x_theta)
         x_theta = self.bn1_2_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[2], cond_input_theta)
         
+        # Block 2
         x_theta = self.upconv2_complex_theta(x_theta)
         x_theta = self.bn2_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[3], cond_input_theta)
         x_theta = self.conv2_1_complex_theta(x_theta)
         x_theta = self.bn2_1_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[4], cond_input_theta)
         x_theta = self.conv2_2_complex_theta(x_theta)
         x_theta = self.bn2_2_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[5], cond_input_theta)
 
+        # Block 3
         x_theta = self.upconv3_complex_theta(x_theta)
         x_theta = self.bn3_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[6], cond_input_theta)
         x_theta = self.conv3_1_complex_theta(x_theta)
         x_theta = self.bn3_1_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[7], cond_input_theta)
         x_theta = self.conv3_2_complex_theta(x_theta)
         x_theta = self.bn3_2_complex_theta(x_theta)
         x_theta = complex_relu(x_theta)
+        x_theta = add_complex_cond(x_theta, self.cond_layers_theta[8], cond_input_theta)
         
         e_theta_complex = self.head_complex_theta(x_theta)
 
-        # --- E_phi Decoder Path ---
+        # --- 【修改】E_phi Decoder Path (使用新的复数控制) ---
+        # Block 1
         x_phi = self.upconv1_complex_phi(x_complex)
         x_phi = self.bn1_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[0], cond_input_phi)
         x_phi = self.conv1_1_complex_phi(x_phi)
         x_phi = self.bn1_1_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[1], cond_input_phi)
         x_phi = self.conv1_2_complex_phi(x_phi)
         x_phi = self.bn1_2_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[2], cond_input_phi)
 
+        # Block 2
         x_phi = self.upconv2_complex_phi(x_phi)
         x_phi = self.bn2_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[3], cond_input_phi)
         x_phi = self.conv2_1_complex_phi(x_phi)
         x_phi = self.bn2_1_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[4], cond_input_phi)
         x_phi = self.conv2_2_complex_phi(x_phi)
         x_phi = self.bn2_2_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
-
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[5], cond_input_phi)
+        
+        # Block 3
         x_phi = self.upconv3_complex_phi(x_phi)
         x_phi = self.bn3_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[6], cond_input_phi)
         x_phi = self.conv3_1_complex_phi(x_phi)
         x_phi = self.bn3_1_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[7], cond_input_phi)
         x_phi = self.conv3_2_complex_phi(x_phi)
         x_phi = self.bn3_2_complex_phi(x_phi)
         x_phi = complex_relu(x_phi)
+        x_phi = add_complex_cond(x_phi, self.cond_layers_phi[8], cond_input_phi)
 
         e_phi_complex = self.head_complex_phi(x_phi)
 
@@ -360,8 +425,8 @@ class MeshCodec(Module):
         out_im_ephi   = e_phi_complex.imag
         
         return torch.cat([out_re_etheta, out_im_etheta, out_re_ephi, out_im_ephi], dim=1)
-    
 
+    # ... (forward 方法和后面的 metric 计算保持不变) ...
     def forward(self, *, vertices, faces, face_edges=None, in_em, GT=None, logger=None, device='cpu', loss_type='L1', **kwargs):
         original_in_em = [in_em[0], in_em[1].clone(), in_em[2].clone(), in_em[3].clone()]
         original_freqs_ghz = in_em[3].clone()
